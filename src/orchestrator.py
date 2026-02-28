@@ -1,6 +1,6 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 6: Signal persistence (SQLite) + Telegram notifications.
+Phase 7: CLOB trade analysis for confirmed signals.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
@@ -9,9 +9,10 @@ Pipeline per cycle:
 4. AnomalyDetector.batch_detect() → all markets
 5. Filter: score >= MISTRAL_THRESHOLD
 6. MistralAnalyzer.analyze_batch() → flagged only
-7. Deduplicate → SignalStore.save() → TelegramNotifier.send_signal()
+7. Trade analysis (CLOB) → confirmed signals only
+8. Deduplicate → SignalStore.save() → TelegramNotifier.send_signal()
 
-Author: Diego Ringleb | Phase 6 | 2026-02-28
+Author: Diego Ringleb | Phase 7 | 2026-02-28
 """
 
 import time
@@ -24,6 +25,7 @@ from src.anomaly_detector import AnomalyDetector
 from src.mistral_analyzer import MistralAnalyzer
 from src.signal_store import SignalStore
 from src.telegram_notifier import TelegramNotifier
+from src.trade_analyzer import TradeAnalyzer
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,22 +36,23 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 6 adds:
-    - SignalStore: every signal persisted to SQLite
-    - TelegramNotifier: real-time push notifications
-    - Deduplication: same market not re-alerted within 4h
+    Main polling loop. Phase 7 adds:
+    - TradeAnalyzer: CLOB on-chain evidence for confirmed signals
+    - Whale detection, wallet concentration, directional bias
+    - Trade evidence included in signal storage + Telegram
     """
 
     def __init__(self):
         self.fetcher   = PolymarketFetcher()
         self.detector  = AnomalyDetector()
         self.analyzer  = MistralAnalyzer()
+        self.trader    = TradeAnalyzer()
         self.store     = SignalStore(config.SIGNAL_DB_PATH)
         self.notifier  = TelegramNotifier()
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 6)")
+        logger.info("🚀 Orchestrator initialized (Phase 7 – CLOB Trade Analysis)")
 
     # ==================== ENRICHMENT ====================
 
@@ -82,43 +85,55 @@ class Orchestrator:
 
     # ==================== SIGNAL HANDLING ====================
 
-    def _process_signal(self, result: Dict[str, Any], snapshot: Dict[str, Any], cycle: int) -> bool:
+    def _process_signal(
+        self, result: Dict[str, Any],
+        snapshot: Dict[str, Any],
+        trade_metrics: Dict[str, Any],
+        cycle: int
+    ) -> bool:
         """
         Persist + notify a single confirmed signal.
         Returns True if signal was new (not duplicate).
         """
         market_id = result.get('market_id', snapshot.get('id', ''))
 
-        # Deduplication check
         if self.store.is_duplicate(market_id):
             logger.debug(f"⏭️ Duplicate skipped: {result.get('question', '')[:45]}")
             return False
 
-        # Enrich signal with snapshot data for storage
         enriched = {
             **result,
-            'market_id':   market_id,
-            'yes_price':   snapshot.get('yes_price', 0.5),
-            'volume_24hr': snapshot.get('volume_24hr', 0),
-            'spike_ratio': snapshot.get('spike_ratio', 1.0),
-            'end_date_iso': snapshot.get('end_date_iso'),
-            'cycle':       cycle,
-            'detected_at': datetime.now(timezone.utc).isoformat(),
+            'market_id':     market_id,
+            'yes_price':     snapshot.get('yes_price', 0.5),
+            'volume_24hr':   snapshot.get('volume_24hr', 0),
+            'spike_ratio':   snapshot.get('spike_ratio', 1.0),
+            'end_date_iso':  snapshot.get('end_date_iso'),
+            'cycle':         cycle,
+            'detected_at':   datetime.now(timezone.utc).isoformat(),
+            # Trade analysis (Phase 7)
+            'whale_count':       trade_metrics.get('whale_count', 0),
+            'whale_volume_pct':  trade_metrics.get('whale_volume_pct', 0),
+            'top_wallet_pct':    trade_metrics.get('top_wallet_pct', 0),
+            'unique_wallets':    trade_metrics.get('unique_wallets', 0),
+            'directional_bias':  trade_metrics.get('directional_bias', 0.5),
+            'dominant_side':     trade_metrics.get('dominant_side', 'NONE'),
+            'burst_score':       trade_metrics.get('burst_score', 1.0),
+            'trade_suspicious':  trade_metrics.get('suspicious', False),
+            'suspicious_reasons': trade_metrics.get('suspicious_reasons', []),
         }
 
-        # Persist
         row_id = self.store.save(enriched)
 
-        # Notify via Telegram
         sent = self.notifier.send_signal(enriched)
         if sent:
             self.store.mark_telegram_sent(row_id)
 
+        whale_tag = " 🐋" if trade_metrics.get('suspicious') else ""
         logger.info(
-            f"📣 SIGNAL #{row_id}: {result.get('question', '')[:50]} | "
+            f"📣 SIGNAL #{row_id}: {result.get('question', '')[:45]} | "
             f"Trade={result.get('recommended_trade')} | "
             f"Conf={result.get('confidence_score', 0):.2f} | "
-            f"Telegram={'✅' if sent else '⏭️'}"
+            f"Telegram={'✅' if sent else '⏭️'}{whale_tag}"
         )
 
         return True
@@ -133,6 +148,7 @@ class Orchestrator:
         logger.info(f"🔄 Cycle #{self.cycle_count} started")
 
         self.analyzer.reset_cycle_counters()
+        self.trader.reset_cycle_counters()
 
         # ── Step 1: Fetch ────────────────────────────────────────────────
         logger.info("📡 Step 1: Fetching markets...")
@@ -141,8 +157,9 @@ class Orchestrator:
         if not markets:
             logger.warning("No markets fetched – skipping cycle")
             return {
-                'cycle': self.cycle_count, 'markets': 0,
-                'anomalies': 0, 'signals': [], 'signal_count': 0
+                'cycle': self.cycle_count, 'markets_fetched': 0,
+                'anomalies_detected': 0, 'signals': [],
+                'signal_count': 0, 'whale_signals': 0
             }
         logger.info(f"✅ {len(markets)} markets fetched")
 
@@ -173,8 +190,7 @@ class Orchestrator:
         )
 
         # ── Step 6: Mistral validation ───────────────────────────────────
-        signals = []
-        new_signals = 0
+        confirmed = []
 
         if flagged:
             n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)
@@ -193,18 +209,47 @@ class Orchestrator:
             for result in mistral_results:
                 if (result.get('anomaly_detected')
                         and result.get('confidence_score', 0) >= 0.65):
+                    confirmed.append(result)
 
-                    market_id = result.get('market_id', '')
-                    snapshot  = snapshot_map.get(market_id, {})
+        logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
 
-                    is_new = self._process_signal(result, snapshot, self.cycle_count)
-                    if is_new:
-                        signals.append(result)
-                        new_signals += 1
+        # ── Step 7: CLOB Trade Analysis (confirmed only) ────────────────
+        trade_results = {}
+        if confirmed and config.TRADE_ANALYSIS_ENABLED:
+            confirmed_snapshots = [
+                snapshot_map[r['market_id']]
+                for r in confirmed
+                if r.get('market_id') in snapshot_map
+            ]
+            # Cap to budget
+            confirmed_snapshots = confirmed_snapshots[:config.MAX_TRADE_ANALYSIS_PER_CYCLE]
+
+            logger.info(
+                f"🐋 Step 7: CLOB trade analysis on "
+                f"{len(confirmed_snapshots)} confirmed signals..."
+            )
+            trade_results = self.trader.analyze_batch(confirmed_snapshots)
+
+        # ── Step 8: Store + Notify ───────────────────────────────────────
+        signals = []
+        new_signals = 0
+        whale_signals = 0
+
+        for result in confirmed:
+            market_id = result.get('market_id', '')
+            snapshot  = snapshot_map.get(market_id, {})
+            trade_met = trade_results.get(market_id, {})
+
+            is_new = self._process_signal(result, snapshot, trade_met, self.cycle_count)
+            if is_new:
+                signals.append(result)
+                new_signals += 1
+                if trade_met.get('suspicious'):
+                    whale_signals += 1
 
         cycle_time = time.time() - cycle_start
 
-        # ── Step 7: Store stats ──────────────────────────────────────────
+        # ── Stats ────────────────────────────────────────────────────────
         db_stats = self.store.get_stats()
         logger.info(
             f"📦 DB: {db_stats['total_signals']} total | "
@@ -213,32 +258,37 @@ class Orchestrator:
         )
 
         summary = {
-            'cycle':             self.cycle_count,
-            'timestamp':         datetime.now(timezone.utc).isoformat(),
-            'markets_fetched':   len(markets),
-            'snapshots_built':   len(snapshots),
+            'cycle':              self.cycle_count,
+            'timestamp':          datetime.now(timezone.utc).isoformat(),
+            'markets_fetched':    len(markets),
+            'snapshots_built':    len(snapshots),
             'anomalies_detected': len(flagged),
-            'signals':           signals,
-            'signal_count':      new_signals,
-            'mistral_calls':     self.analyzer.call_count,
-            'cycle_time_sec':    round(cycle_time, 2),
-            'db_stats':          db_stats,
+            'mistral_confirmed':  len(confirmed),
+            'signals':            signals,
+            'signal_count':       new_signals,
+            'whale_signals':      whale_signals,
+            'mistral_calls':      self.analyzer.call_count,
+            'clob_calls':         self.trader.call_count,
+            'cycle_time_sec':     round(cycle_time, 2),
+            'db_stats':           db_stats,
         }
 
         logger.info(
             f"✅ Cycle #{self.cycle_count} complete | "
-            f"{len(markets)} markets | "
-            f"{len(flagged)} anomalies | "
-            f"{new_signals} new signals | "
-            f"{cycle_time:.1f}s"
+            f"{len(markets)} markets | {len(flagged)} anomalies | "
+            f"{len(confirmed)} confirmed | {new_signals} new signals | "
+            f"{whale_signals} whale alerts | {cycle_time:.1f}s"
         )
 
         return summary
 
     def run(self, max_cycles: int = None):
         """Main polling loop."""
-        logger.info(f"🚀 PolyAugur Phase 6 | Poll: {config.POLL_INTERVAL_SEC}s | "
-                    f"DB: {config.SIGNAL_DB_PATH}")
+        logger.info(
+            f"🚀 PolyAugur Phase 7 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"DB: {config.SIGNAL_DB_PATH} | "
+            f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
+        )
 
         cycle = 0
         while True:
@@ -265,22 +315,25 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 6")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 7")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 6 with DB + Telegram)...")
+    print("\n[Test 1] Single cycle (Phase 7 with CLOB Trade Analysis)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
-    print(f"   Markets fetched:    {summary['markets_fetched']}")
-    print(f"   Snapshots built:    {summary['snapshots_built']}")
-    print(f"   Anomalies flagged:  {summary['anomalies_detected']}")
-    print(f"   New signals:        {summary['signal_count']}")
-    print(f"   Mistral calls:      {summary['mistral_calls']}")
-    print(f"   Cycle time:         {summary['cycle_time_sec']}s")
-    print(f"   DB stats:           {summary['db_stats']}")
+    print(f"   Markets fetched:     {summary['markets_fetched']}")
+    print(f"   Snapshots built:     {summary['snapshots_built']}")
+    print(f"   Anomalies flagged:   {summary['anomalies_detected']}")
+    print(f"   Mistral confirmed:   {summary['mistral_confirmed']}")
+    print(f"   New signals:         {summary['signal_count']}")
+    print(f"   🐋 Whale signals:    {summary['whale_signals']}")
+    print(f"   Mistral calls:       {summary['mistral_calls']}")
+    print(f"   CLOB calls:          {summary['clob_calls']}")
+    print(f"   Cycle time:          {summary['cycle_time_sec']}s")
+    print(f"   DB stats:            {summary['db_stats']}")
 
     if summary['signals']:
         print(f"\n🚨 New signals:")
@@ -292,10 +345,10 @@ def main():
                 f"Risk: {s.get('risk_level')}"
             )
     else:
-        print("\n   No new signals (may be duplicates or below threshold)")
+        print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 6 Orchestrator: PASSED")
+    print("✅ Phase 7 Orchestrator: PASSED")
     print("=" * 60)
 
 

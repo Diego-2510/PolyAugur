@@ -301,6 +301,7 @@ class PolymarketFetcher:
                 'end_date_iso': market.get('end_date_iso'),
                 'tags': market.get('tags', []),
                 'event_slug': market.get('event_slug', market.get('eventSlug')),
+                'clobTokenIds': market.get('clobTokenIds', market.get('clob_token_ids', [])),
                 'baseline': round(avg_daily_baseline, 2),
                 'current_volume': volume_24hr,
                 'spike_ratio': round(spike_ratio, 3),
