@@ -1,19 +1,20 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 12.1: Balanced insider coverage — broader topics, tighter confirmation.
+Phase 12.2: Strict insider focus — quality over quantity.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
 2. Build snapshots with real baseline
 3. Price velocity enrichment
 4. AnomalyDetector.batch_detect() → all markets
-5. Filter: score >= 0.35
-6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.55)
+5. Filter: score >= 0.40
+6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.60)
 7. Trade analysis (CLOB) → confirmed signals only
 8. Whale confidence boost → Deduplicate → Store → Telegram
 9. Performance check (every 10 cycles)
 
-Author: Diego Ringleb | Phase 12.1 | 2026-02-28
+Target: 5–10 high-quality insider signals per cycle.
+Author: Diego Ringleb | Phase 12.2 | 2026-03-01
 """
 
 import time
@@ -38,12 +39,11 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 12.1 balance:
-    - Pre-filter threshold 0.35 (was 0.45 → 0.30 → 0.35)
-    - Mistral confirmation 0.55 (was 0.65 → 0.50 → 0.55)
-    - 15 Mistral calls per cycle (was 10 → 20 → 15)
-    - Batch size 5 (efficient)
-    Target: 8–15 signals per cycle.
+    Main polling loop. Phase 12.2: strict insider focus.
+    - Pre-filter threshold 0.40
+    - Mistral confirmation ≥ 0.60
+    - 12 Mistral calls, batch size 4
+    Target: 5–10 signals per cycle, all plausible insider activity.
     """
 
     def __init__(self):
@@ -57,7 +57,7 @@ class Orchestrator:
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 12.1 – Balanced Insider Coverage)")
+        logger.info("🚀 Orchestrator initialized (Phase 12.2 – Strict Insider Focus)")
 
     # ==================== ENRICHMENT ====================
 
@@ -264,7 +264,7 @@ class Orchestrator:
 
             for result in mistral_results:
                 if (result.get('anomaly_detected')
-                        and result.get('confidence_score', 0) >= 0.55):
+                        and result.get('confidence_score', 0) >= 0.60):
                     confirmed.append(result)
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
@@ -360,7 +360,7 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 12.1 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 12.2 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
             f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
         )
@@ -390,12 +390,12 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12.1")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12.2")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 12.1 — Balanced Insider Coverage)...")
+    print("\n[Test 1] Single cycle (Phase 12.2 — Strict Insider Focus)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
@@ -425,7 +425,7 @@ def main():
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 12.1 Orchestrator: PASSED")
+    print("✅ Phase 12.2 Orchestrator: PASSED")
     print("=" * 60)
 
 

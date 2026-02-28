@@ -1,6 +1,6 @@
 """
 PolyAugur Configuration
-Author: Diego Ringleb | Phase 12.1 | 2026-02-28
+Author: Diego Ringleb | Phase 12.2 | 2026-03-01
 """
 
 import os
@@ -22,8 +22,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Detection Thresholds ─────────────────────────────────────────────────
-CONFIDENCE_THRESHOLD      = 0.35   # Phase 12.1: balanced (was 0.45 → 0.30 → 0.35)
-MISTRAL_THRESHOLD         = 0.35   # Phase 12.1: balanced (was 0.45 → 0.30 → 0.35)
+CONFIDENCE_THRESHOLD      = 0.40   # Phase 12.2: strict insider focus
+MISTRAL_THRESHOLD         = 0.40   # Phase 12.2: only strong anomalies to Mistral
 MAX_POSITION_SIZE_PCT     = 0.10
 
 # ── Polling ──────────────────────────────────────────────────────────────
@@ -38,11 +38,11 @@ BACKOFF_DELAYS      = [0.3, 0.6, 1.2, 2.4, 5.0]
 
 # ── Scaling ──────────────────────────────────────────────────────────────
 MARKETS_PER_PAGE            = 100
-MAX_PAGES                   = 100     # 100 × 100 = 10,000 markets max
-MIN_VOLUME_24H              = 5_000   # Phase 12.1: balanced (was 10k → 1k → 5k)
+MAX_PAGES                   = 100
+MIN_VOLUME_24H              = 8_000   # Phase 12.2: filter low-activity noise
 
-MAX_MISTRAL_CALLS_PER_CYCLE = 15      # Phase 12.1: balanced (was 10 → 20 → 15)
-MISTRAL_BATCH_SIZE          = 5       # efficient batches
+MAX_MISTRAL_CALLS_PER_CYCLE = 12      # Phase 12.2: focused budget
+MISTRAL_BATCH_SIZE          = 4
 
 # ── Trade Analysis ───────────────────────────────────────────────────────
 TRADE_ANALYSIS_ENABLED       = True
