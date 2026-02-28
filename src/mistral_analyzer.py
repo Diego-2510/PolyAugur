@@ -1,7 +1,8 @@
 """
 PolyAugur Mistral Analyzer - LLM-powered Signal Validation
 Two-tier architecture: AnomalyDetector pre-screens → Mistral validates top candidates only.
-Author: Diego Ringleb | Phase 4+5 | 2026-02-28
+Phase 9: Whale intelligence context in system + user prompts.
+Author: Diego Ringleb | Phase 9 | 2026-02-28
 """
 
 import json
@@ -63,6 +64,13 @@ NOT insider signals (set anomaly_detected=false):
 - Long-term crypto price targets: Pure speculation, no privileged info
 - Viral/social media driven spikes: Retail FOMO, not informed trading
 
+WHALE INTELLIGENCE CONTEXT (if provided):
+When whale/trade data is included in the market snapshot, factor it into your analysis:
+- whale_count >= 3 AND top_wallet_pct >= 40%: Strong insider signal. Boost confidence +0.05.
+- directional_bias >= 85% with burst_score >= 3.0: Coordinated buying pattern. Boost confidence +0.05.
+- 0 whales with high volume: Likely retail FOMO, not insider. Reduce confidence -0.05.
+- Use whale data as SUPPORTING evidence, never as the sole basis for a signal.
+
 Few-shot Example 1 (GOOD signal — Fed nomination, 20 days out):
 Input: "Will Trump nominate Michelle Bowman as Fed chair?", volume 9x baseline, topic=fed_chair, closes in 20 days
 Output: {"anomaly_detected": true, "confidence_score": 0.87, "anomaly_type": "volume_spike", "reasoning": "Fed nominations decided privately. 9x baseline spike 20d before resolution consistent with White House insider leak.", "recommended_trade": "BUY_YES", "recommended_position_size_pct": 0.10, "risk_level": "medium", "holding_period_hours": 48, "supporting_evidence": ["9x volume spike", "Insider-prone topic: fed nomination", "Short time horizon"], "counter_evidence": ["Nominations can change last-minute"]}
@@ -73,7 +81,11 @@ Output: {"anomaly_detected": false, "confidence_score": 0.08, "anomaly_type": "n
 
 Few-shot Example 3 (GOOD signal — US military action, 7 days out):
 Input: "Will US conduct airstrike on Iran before March 15?", volume 36x baseline, closes in 7 days, price 0.08→0.41
-Output: {"anomaly_detected": true, "confidence_score": 0.91, "anomaly_type": "smart_reversal", "reasoning": "36x spike + price tripled in 24h on military market 7 days before close. Classic intelligence leak pattern.", "recommended_trade": "BUY_YES", "recommended_position_size_pct": 0.08, "risk_level": "high", "holding_period_hours": 24, "supporting_evidence": ["36x volume spike", "Price +0.33 in 24h", "7-day horizon", "Military insider-prone"], "counter_evidence": ["High false positive rate on military markets", "Price already moved significantly"]}"""
+Output: {"anomaly_detected": true, "confidence_score": 0.91, "anomaly_type": "smart_reversal", "reasoning": "36x spike + price tripled in 24h on military market 7 days before close. Classic intelligence leak pattern.", "recommended_trade": "BUY_YES", "recommended_position_size_pct": 0.08, "risk_level": "high", "holding_period_hours": 24, "supporting_evidence": ["36x volume spike", "Price +0.33 in 24h", "7-day horizon", "Military insider-prone"], "counter_evidence": ["High false positive rate on military markets", "Price already moved significantly"]}
+
+Few-shot Example 4 (GOOD signal — whale-backed geopolitical):
+Input: "Will Russia-Ukraine ceasefire be announced before April?", volume 12x baseline, closes in 14 days, 5 whale trades, top wallet 47%, directional bias 91% BUY, burst 4.2x
+Output: {"anomaly_detected": true, "confidence_score": 0.89, "anomaly_type": "coordinated_buying", "reasoning": "5 whales, 91% directional BUY bias, 4.2x burst on ceasefire market 14d out. Coordinated informed positioning.", "recommended_trade": "BUY_YES", "recommended_position_size_pct": 0.08, "risk_level": "high", "holding_period_hours": 36, "supporting_evidence": ["12x volume spike", "5 whale trades >$5k", "91% directional bias", "4.2x timing burst", "Ceasefire insider-prone"], "counter_evidence": ["Ceasefire talks often collapse", "High geopolitical uncertainty"]}"""
 
 
 class MistralAnalyzer:
@@ -88,6 +100,8 @@ class MistralAnalyzer:
     - Max config.MAX_MISTRAL_CALLS_PER_CYCLE calls per polling cycle
     - Batches 3 markets per prompt (3x cost savings)
     - Rule-based fallback if API unavailable
+
+    Phase 9: Whale intelligence context injected into prompts when available.
     """
 
     def __init__(self):
@@ -98,6 +112,25 @@ class MistralAnalyzer:
             self.client = Mistral(api_key=config.MISTRAL_API_KEY)
         self.call_count = 0
         self.error_count = 0
+
+    def _build_whale_section(self, snapshot: Dict[str, Any]) -> str:
+        """Build whale intelligence section for the prompt (if data available)."""
+        whale_count = snapshot.get('whale_count', 0)
+        suspicious = snapshot.get('trade_suspicious', False)
+
+        if whale_count == 0 and not suspicious:
+            return ""
+
+        return f"""
+WHALE INTELLIGENCE (from CLOB on-chain trades)
+- Whale trades (>$5k): {whale_count}
+- Whale volume %: {snapshot.get('whale_volume_pct', 0):.0%}
+- Top wallet %: {snapshot.get('top_wallet_pct', 0):.0%}
+- Unique wallets: {snapshot.get('unique_wallets', 0)}
+- Directional bias: {snapshot.get('directional_bias', 0.5):.0%} {snapshot.get('dominant_side', 'NONE')}
+- Timing burst: {snapshot.get('burst_score', 1.0):.1f}x (last 1h vs avg)
+- Suspicious: {suspicious}
+"""
 
     def _build_user_prompt(self, snapshot: Dict[str, Any], anomaly_result: Dict[str, Any]) -> str:
         """Build structured user prompt from snapshot + pre-detection data."""
@@ -115,6 +148,8 @@ class MistralAnalyzer:
                 days_to_close = (closes_at - datetime.now(timezone.utc)).days
         except Exception:
             pass
+
+        whale_section = self._build_whale_section(snapshot)
 
         return f"""MARKET SNAPSHOT
 Question: {snapshot.get('question', 'Unknown')}
@@ -138,9 +173,9 @@ ANOMALY PRE-DETECTION
 - Topic Sensitivity: {topic.get('reasons', [])}
 - Time Horizon Multiplier: {topic.get('multiplier', 1.0):.2f}
 - Pre-screen Score: {anomaly_result.get('score', 0):.3f}
-
+{whale_section}
 QUESTION: Is this unusual activity likely (1) informed/insider trading, (2) retail hype, or (3) normal market activity?
-Apply TIME HORIZON RULE first. Then assess topic insider-proneness.
+Apply TIME HORIZON RULE first. Then assess topic insider-proneness.{' Factor in WHALE INTELLIGENCE if provided.' if whale_section else ''}
 RESPOND ONLY IN JSON FORMAT"""
 
     def _build_batch_prompt(self, items: List[Dict[str, Any]]) -> str:
@@ -168,13 +203,21 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             return None
 
         if isinstance(parsed, dict):
-            parsed = [parsed]
+            # Check if it's a wrapper like {"results": [...]}
+            for key in ('results', 'markets', 'analyses', 'analysis'):
+                if key in parsed and isinstance(parsed[key], list):
+                    parsed = parsed[key]
+                    break
+            else:
+                parsed = [parsed]
         elif not isinstance(parsed, list):
             logger.error(f"Unexpected JSON type: {type(parsed)}")
             return None
 
         validated = []
         for item in parsed:
+            if not isinstance(item, dict):
+                continue
             if 'confidence_score' in item:
                 item['confidence_score'] = max(0.0, min(0.95, float(item['confidence_score'])))
             if 'recommended_position_size_pct' in item:
@@ -333,7 +376,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                         results.append(signal)
                     logger.info(f"🧠 Mistral batch: {len(batch)} markets analyzed in 1 call")
                 else:
-                    logger.warning(f"Batch parse mismatch, falling back")
+                    logger.warning("Batch parse mismatch, falling back")
                     for snapshot, anomaly_result in batch:
                         results.append(self._rule_based_fallback(snapshot, anomaly_result))
 
@@ -352,7 +395,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Mistral Analyzer Test - Phase 5")
+    logger.info("🧪 PolyAugur Mistral Analyzer Test - Phase 9")
     logger.info("=" * 60)
 
     from datetime import timedelta
@@ -366,7 +409,11 @@ def main():
         'yes_price': 0.73, 'no_price': 0.27, 'spread': 0.46,
         'holders': [], 'baseline': 50_000, 'current_volume': 453_000,
         'price_delta_30m': 0.08, 'price_velocity': 0.16,
-        'end_date_iso': (now + timedelta(days=20)).isoformat()
+        'end_date_iso': (now + timedelta(days=20)).isoformat(),
+        # Whale data (Phase 9)
+        'whale_count': 4, 'whale_volume_pct': 0.62, 'top_wallet_pct': 0.38,
+        'unique_wallets': 28, 'directional_bias': 0.88, 'dominant_side': 'BUY',
+        'burst_score': 3.5, 'trade_suspicious': True,
     }
     anomaly_fed = {
         'score': 0.58, 'base_score': 0.45, 'topic_multiplier': 1.30,
@@ -384,7 +431,8 @@ def main():
         'yes_price': 0.08, 'no_price': 0.92, 'spread': 0.84,
         'holders': [], 'baseline': 50_000, 'current_volume': 321_000,
         'price_delta_30m': 0.0, 'price_velocity': 0.0,
-        'end_date_iso': (now + timedelta(days=900)).isoformat()
+        'end_date_iso': (now + timedelta(days=900)).isoformat(),
+        'whale_count': 0, 'trade_suspicious': False,
     }
     anomaly_election = {
         'score': 0.13, 'base_score': 0.45, 'topic_multiplier': 0.30,
@@ -395,19 +443,31 @@ def main():
         }
     }
 
-    print(f"\n[Test 1] Fed nomination (20d, SHOULD flag)...")
+    print(f"\n[Test 1] Fed nomination (20d + whale data, SHOULD flag)...")
     r1 = analyzer.analyze_single(snap_fed, anomaly_fed)
     status = "✅" if r1.get('anomaly_detected') else "❌"
     print(f"   {status} Anomaly={r1.get('anomaly_detected')} | Conf={r1.get('confidence_score', 0):.2f} | Trade={r1.get('recommended_trade')}")
-    print(f"   Reasoning: {r1.get('reasoning', '')[:100]}")
+    print(f"   Reasoning: {r1.get('reasoning', '')[:120]}")
+    print(f"   Source: {r1.get('source')}")
 
-    print(f"\n[Test 2] 2028 Election (900d, should NOT flag)...")
+    print(f"\n[Test 2] 2028 Election (900d, no whales, should NOT flag)...")
     r2 = analyzer.analyze_single(snap_election, anomaly_election)
     status = "✅" if not r2.get('anomaly_detected') else "❌"
     print(f"   {status} Anomaly={r2.get('anomaly_detected')} | Conf={r2.get('confidence_score', 0):.2f}")
 
+    print(f"\n[Test 3] Batch analysis (both markets)...")
+    batch_results = analyzer.analyze_batch([
+        (snap_fed, anomaly_fed),
+        (snap_election, anomaly_election)
+    ])
+    for i, r in enumerate(batch_results):
+        print(f"   Market {i+1}: Anomaly={r.get('anomaly_detected')} | Conf={r.get('confidence_score', 0):.2f}")
+
+    print(f"\n   Mistral calls used: {analyzer.call_count}")
+    print(f"   Errors: {analyzer.error_count}")
+
     print("\n" + "=" * 60)
-    print("✅ Phase 5 Mistral Analyzer: PASSED")
+    print("✅ Phase 9 Mistral Analyzer: PASSED")
     print("=" * 60)
 
 
