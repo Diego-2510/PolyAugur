@@ -1,6 +1,6 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 7: CLOB trade analysis for confirmed signals.
+Phase 8: Whale confidence boost + performance tracking.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
@@ -10,9 +10,10 @@ Pipeline per cycle:
 5. Filter: score >= MISTRAL_THRESHOLD
 6. MistralAnalyzer.analyze_batch() → flagged only
 7. Trade analysis (CLOB) → confirmed signals only
-8. Deduplicate → SignalStore.save() → TelegramNotifier.send_signal()
+8. Whale confidence boost → Deduplicate → Store → Telegram
+9. Performance check (every 10 cycles)
 
-Author: Diego Ringleb | Phase 7 | 2026-02-28
+Author: Diego Ringleb | Phase 8 | 2026-02-28
 """
 
 import time
@@ -26,6 +27,7 @@ from src.mistral_analyzer import MistralAnalyzer
 from src.signal_store import SignalStore
 from src.telegram_notifier import TelegramNotifier
 from src.trade_analyzer import TradeAnalyzer
+from src.performance_tracker import PerformanceTracker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,10 +38,10 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 7 adds:
-    - TradeAnalyzer: CLOB on-chain evidence for confirmed signals
-    - Whale detection, wallet concentration, directional bias
-    - Trade evidence included in signal storage + Telegram
+    Main polling loop. Phase 8 adds:
+    - Whale confidence boost: on-chain evidence increases confidence score
+    - PerformanceTracker: automatic outcome resolution + P&L
+    - Daily report via Telegram with win rate
     """
 
     def __init__(self):
@@ -49,10 +51,11 @@ class Orchestrator:
         self.trader    = TradeAnalyzer()
         self.store     = SignalStore(config.SIGNAL_DB_PATH)
         self.notifier  = TelegramNotifier()
+        self.tracker   = PerformanceTracker(self.store)
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 7 – CLOB Trade Analysis)")
+        logger.info("🚀 Orchestrator initialized (Phase 8 – Whale Boost + Performance)")
 
     # ==================== ENRICHMENT ====================
 
@@ -82,6 +85,55 @@ class Orchestrator:
             }
 
         return snapshots
+
+    # ==================== CONFIDENCE BOOST ====================
+
+    def _apply_whale_boost(
+        self, result: Dict[str, Any], trade_metrics: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        Boost confidence score when on-chain evidence supports the signal.
+
+        Boost logic:
+        - Suspicious whale activity: +0.05
+        - Directional bias matches trade: +0.05
+        - Burst score >= 3.0: +0.03
+        - Top wallet >= 40%: +0.02
+        - Max total boost: 0.15 (capped)
+        """
+        boost = 0.0
+        raw_conf = result.get('confidence_score', 0.0)
+
+        if trade_metrics.get('suspicious'):
+            boost += 0.05
+
+        # Directional alignment check
+        trade_dir = result.get('recommended_trade', 'HOLD')
+        dom_side  = trade_metrics.get('dominant_side', 'NONE')
+        if (trade_dir == 'BUY_YES' and dom_side == 'BUY') or \
+           (trade_dir == 'BUY_NO' and dom_side == 'SELL'):
+            boost += 0.05
+
+        if trade_metrics.get('burst_score', 1.0) >= 3.0:
+            boost += 0.03
+
+        if trade_metrics.get('top_wallet_pct', 0) >= 0.40:
+            boost += 0.02
+
+        boost = min(boost, 0.15)
+        boosted_conf = min(raw_conf + boost, 0.99)
+
+        result['confidence_raw']   = raw_conf
+        result['confidence_boost'] = round(boost, 3)
+        result['confidence_score'] = round(boosted_conf, 3)
+
+        if boost > 0:
+            logger.info(
+                f"🐋 Whale boost: {raw_conf:.2f} → {boosted_conf:.2f} "
+                f"(+{boost:.2f}) for {result.get('question', '')[:40]}"
+            )
+
+        return result
 
     # ==================== SIGNAL HANDLING ====================
 
@@ -129,10 +181,14 @@ class Orchestrator:
             self.store.mark_telegram_sent(row_id)
 
         whale_tag = " 🐋" if trade_metrics.get('suspicious') else ""
+        boost_tag = ""
+        if result.get('confidence_boost', 0) > 0:
+            boost_tag = f" (↑{result['confidence_boost']:.0%})"
+
         logger.info(
             f"📣 SIGNAL #{row_id}: {result.get('question', '')[:45]} | "
             f"Trade={result.get('recommended_trade')} | "
-            f"Conf={result.get('confidence_score', 0):.2f} | "
+            f"Conf={result.get('confidence_score', 0):.2f}{boost_tag} | "
             f"Telegram={'✅' if sent else '⏭️'}{whale_tag}"
         )
 
@@ -221,7 +277,6 @@ class Orchestrator:
                 for r in confirmed
                 if r.get('market_id') in snapshot_map
             ]
-            # Cap to budget
             confirmed_snapshots = confirmed_snapshots[:config.MAX_TRADE_ANALYSIS_PER_CYCLE]
 
             logger.info(
@@ -230,7 +285,7 @@ class Orchestrator:
             )
             trade_results = self.trader.analyze_batch(confirmed_snapshots)
 
-        # ── Step 8: Store + Notify ───────────────────────────────────────
+        # ── Step 8: Whale boost + Store + Notify ─────────────────────────
         signals = []
         new_signals = 0
         whale_signals = 0
@@ -239,6 +294,9 @@ class Orchestrator:
             market_id = result.get('market_id', '')
             snapshot  = snapshot_map.get(market_id, {})
             trade_met = trade_results.get(market_id, {})
+
+            # Phase 8: Whale confidence boost
+            result = self._apply_whale_boost(result, trade_met)
 
             is_new = self._process_signal(result, snapshot, trade_met, self.cycle_count)
             if is_new:
@@ -249,13 +307,31 @@ class Orchestrator:
 
         cycle_time = time.time() - cycle_start
 
+        # ── Step 9: Performance check (every 10 cycles) ─────────────────
+        perf_summary = {}
+        if self.cycle_count % 10 == 0:
+            logger.info("📊 Step 9: Checking signal outcomes...")
+            perf_summary = self.tracker.check_outcomes()
+
+            # Send daily report if we have resolved signals
+            if perf_summary.get('wins', 0) + perf_summary.get('losses', 0) > 0:
+                db_stats = self.store.get_stats()
+                self.notifier.send_daily_report(db_stats)
+
         # ── Stats ────────────────────────────────────────────────────────
         db_stats = self.store.get_stats()
         logger.info(
             f"📦 DB: {db_stats['total_signals']} total | "
             f"{db_stats['signals_24h']} (24h) | "
-            f"{db_stats['telegram_unsent']} unsent"
+            f"{db_stats['telegram_unsent']} unsent | "
+            f"🐋 {db_stats.get('whale_signals', 0)} whale"
         )
+
+        if db_stats.get('win_rate') is not None:
+            logger.info(
+                f"📊 Performance: {db_stats['wins']}W / {db_stats['losses']}L | "
+                f"WR: {db_stats['win_rate']:.0%}"
+            )
 
         summary = {
             'cycle':              self.cycle_count,
@@ -271,6 +347,7 @@ class Orchestrator:
             'clob_calls':         self.trader.call_count,
             'cycle_time_sec':     round(cycle_time, 2),
             'db_stats':           db_stats,
+            'perf_summary':       perf_summary,
         }
 
         logger.info(
@@ -285,7 +362,7 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 7 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 8 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
             f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
         )
@@ -315,12 +392,12 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 7")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 8")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 7 with CLOB Trade Analysis)...")
+    print("\n[Test 1] Single cycle (Phase 8 with Whale Boost + Performance)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
@@ -335,20 +412,25 @@ def main():
     print(f"   Cycle time:          {summary['cycle_time_sec']}s")
     print(f"   DB stats:            {summary['db_stats']}")
 
+    if summary.get('perf_summary'):
+        print(f"   Performance:         {summary['perf_summary']}")
+
     if summary['signals']:
         print(f"\n🚨 New signals:")
         for s in summary['signals']:
+            boost = s.get('confidence_boost', 0)
+            boost_str = f" (↑{boost:.0%})" if boost > 0 else ""
             print(f"   • {s.get('question', '')[:60]}")
             print(
                 f"     Trade: {s.get('recommended_trade')} | "
-                f"Conf: {s.get('confidence_score', 0):.2f} | "
+                f"Conf: {s.get('confidence_score', 0):.2f}{boost_str} | "
                 f"Risk: {s.get('risk_level')}"
             )
     else:
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 7 Orchestrator: PASSED")
+    print("✅ Phase 8 Orchestrator: PASSED")
     print("=" * 60)
 
 
