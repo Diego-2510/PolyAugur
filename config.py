@@ -1,6 +1,6 @@
 """
 PolyAugur Configuration
-Author: Diego Ringleb | Phase 11 | 2026-02-28
+Author: Diego Ringleb | Phase 12 | 2026-02-28
 """
 
 import os
@@ -22,8 +22,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Detection Thresholds ─────────────────────────────────────────────────
-CONFIDENCE_THRESHOLD      = 0.45
-MISTRAL_THRESHOLD         = 0.45
+CONFIDENCE_THRESHOLD      = 0.30   # was 0.45 → more candidates reach Mistral
+MISTRAL_THRESHOLD         = 0.30   # was 0.45 → Mistral decides quality, not pre-filter
 MAX_POSITION_SIZE_PCT     = 0.10
 
 # ── Polling ──────────────────────────────────────────────────────────────
@@ -36,13 +36,13 @@ CACHE_TTL_MIN = 5
 DATA_API_RATE_LIMIT = 15
 BACKOFF_DELAYS      = [0.3, 0.6, 1.2, 2.4, 5.0]
 
-# ── Scaling (Phase 11: 10.000+ markets) ──────────────────────────────────
+# ── Scaling (Phase 12: broader insider coverage) ─────────────────────────
 MARKETS_PER_PAGE            = 100
 MAX_PAGES                   = 100     # 100 × 100 = 10,000 markets max
-MIN_VOLUME_24H              = 10_000  # Filter stays: nur relevante Märkte
+MIN_VOLUME_24H              = 1_000   # was 10,000 → insiders trade small markets too
 
-MAX_MISTRAL_CALLS_PER_CYCLE = 10
-MISTRAL_BATCH_SIZE          = 3
+MAX_MISTRAL_CALLS_PER_CYCLE = 20      # was 10 → double analysis capacity
+MISTRAL_BATCH_SIZE          = 5       # was 3 → more efficient batches
 
 # ── Trade Analysis ───────────────────────────────────────────────────────
 TRADE_ANALYSIS_ENABLED       = True
@@ -50,8 +50,8 @@ MAX_TRADE_ANALYSIS_PER_CYCLE = 15
 
 # ── Wallet Profiler (Phase 11) ───────────────────────────────────────────
 WALLET_PROFILING_ENABLED     = True
-MAX_WALLET_PROFILES_PER_CYCLE = 10    # Max wallet profile API calls
-WALLET_CACHE_TTL_HOURS       = 24     # Profile cache lifetime
+MAX_WALLET_PROFILES_PER_CYCLE = 10
+WALLET_CACHE_TTL_HOURS       = 24
 
 # ── Signal Store ─────────────────────────────────────────────────────────
 SIGNAL_DB_PATH = os.getenv("SIGNAL_DB_PATH", "data/signals.db")

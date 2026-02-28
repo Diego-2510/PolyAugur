@@ -1,19 +1,19 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 8: Whale confidence boost + performance tracking.
+Phase 12: Broader insider coverage with lower pre-filter thresholds.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
 2. Build snapshots with real baseline
 3. Price velocity enrichment
 4. AnomalyDetector.batch_detect() → all markets
-5. Filter: score >= MISTRAL_THRESHOLD
-6. MistralAnalyzer.analyze_batch() → flagged only
+5. Filter: score >= MISTRAL_THRESHOLD (0.30)
+6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.50)
 7. Trade analysis (CLOB) → confirmed signals only
 8. Whale confidence boost → Deduplicate → Store → Telegram
 9. Performance check (every 10 cycles)
 
-Author: Diego Ringleb | Phase 8 | 2026-02-28
+Author: Diego Ringleb | Phase 12 | 2026-02-28
 """
 
 import time
@@ -38,10 +38,11 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 8 adds:
-    - Whale confidence boost: on-chain evidence increases confidence score
-    - PerformanceTracker: automatic outcome resolution + P&L
-    - Daily report via Telegram with win rate
+    Main polling loop. Phase 12 changes:
+    - Lower pre-filter thresholds (0.30 instead of 0.45)
+    - Mistral confirmation threshold lowered (0.50 instead of 0.65)
+    - More Mistral calls per cycle (20 instead of 10)
+    - Larger batch size (5 instead of 3)
     """
 
     def __init__(self):
@@ -55,7 +56,7 @@ class Orchestrator:
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 8 – Whale Boost + Performance)")
+        logger.info("🚀 Orchestrator initialized (Phase 12 – Broader Insider Coverage)")
 
     # ==================== ENRICHMENT ====================
 
@@ -264,7 +265,7 @@ class Orchestrator:
 
             for result in mistral_results:
                 if (result.get('anomaly_detected')
-                        and result.get('confidence_score', 0) >= 0.65):
+                        and result.get('confidence_score', 0) >= 0.50):
                     confirmed.append(result)
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
@@ -362,7 +363,7 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 8 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 12 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
             f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
         )
@@ -392,12 +393,12 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 8")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 8 with Whale Boost + Performance)...")
+    print("\n[Test 1] Single cycle (Phase 12 — Broader Insider Coverage)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
@@ -430,7 +431,7 @@ def main():
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 8 Orchestrator: PASSED")
+    print("✅ Phase 12 Orchestrator: PASSED")
     print("=" * 60)
 
 
