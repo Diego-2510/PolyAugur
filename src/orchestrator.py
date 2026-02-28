@@ -1,21 +1,17 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Coordinates: data_fetcher → anomaly_detector → mistral_analyzer → output
+Phase 6: Signal persistence (SQLite) + Telegram notifications.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
 2. Build snapshots with real baseline
-3. Price velocity enrichment (cross-cycle delta)
-4. AnomalyDetector.batch_detect() → all markets, free, no API calls
+3. Price velocity enrichment
+4. AnomalyDetector.batch_detect() → all markets
 5. Filter: score >= MISTRAL_THRESHOLD
-6. MistralAnalyzer.analyze_batch() → flagged markets only
-7. Log + store signals
+6. MistralAnalyzer.analyze_batch() → flagged only
+7. Deduplicate → SignalStore.save() → TelegramNotifier.send_signal()
 
-Note: Holder enrichment (Data API /positions) disabled permanently.
-      Data API requires ?user=<wallet> – market-level lookup unsupported.
-      Phase 6: CLOB /trades endpoint for wallet activity analysis.
-
-Author: Diego Ringleb | Phase 5 | 2026-02-28
+Author: Diego Ringleb | Phase 6 | 2026-02-28
 """
 
 import time
@@ -26,6 +22,8 @@ import config
 from src.data_fetcher import PolymarketFetcher
 from src.anomaly_detector import AnomalyDetector
 from src.mistral_analyzer import MistralAnalyzer
+from src.signal_store import SignalStore
+from src.telegram_notifier import TelegramNotifier
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,36 +34,27 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop connecting all PolyAugur modules.
-    No holder enrichment (Data API is user-scoped, not market-scoped).
+    Main polling loop. Phase 6 adds:
+    - SignalStore: every signal persisted to SQLite
+    - TelegramNotifier: real-time push notifications
+    - Deduplication: same market not re-alerted within 4h
     """
 
     def __init__(self):
-        self.fetcher = PolymarketFetcher()
-        self.detector = AnomalyDetector()
-        self.analyzer = MistralAnalyzer()
+        self.fetcher   = PolymarketFetcher()
+        self.detector  = AnomalyDetector()
+        self.analyzer  = MistralAnalyzer()
+        self.store     = SignalStore(config.SIGNAL_DB_PATH)
+        self.notifier  = TelegramNotifier()
 
-        # Price velocity tracking: market_id → last snapshot data
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
-
-        # Signal log (in-memory; Phase 6: persist to SQLite/Postgres)
-        self.signals: List[Dict[str, Any]] = []
-
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized")
+        logger.info("🚀 Orchestrator initialized (Phase 6)")
 
     # ==================== ENRICHMENT ====================
 
     def enrich_with_price_velocity(self, snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Compute price velocity by diffing against previous cycle snapshot.
-        Detects rapid price moves that often precede public news.
-
-        Adds to each snapshot:
-        - price_delta_30m  : YES price change since last cycle
-        - volume_delta_30m : volume change since last cycle
-        - price_velocity   : extrapolated change per hour (delta × 2)
-        """
+        """Compute cross-cycle price and volume delta."""
         now = datetime.now(timezone.utc)
 
         for snapshot in snapshots:
@@ -74,30 +63,70 @@ class Orchestrator:
 
             if prev:
                 price_delta = snapshot['yes_price'] - prev['yes_price']
-                vol_delta = snapshot['volume_24hr'] - prev.get('volume_24hr', 0)
-                snapshot['price_delta_30m'] = round(price_delta, 4)
+                vol_delta   = snapshot['volume_24hr'] - prev.get('volume_24hr', 0)
+                snapshot['price_delta_30m']  = round(price_delta, 4)
                 snapshot['volume_delta_30m'] = round(vol_delta, 0)
-                snapshot['price_velocity'] = round(price_delta * 2, 4)
+                snapshot['price_velocity']   = round(price_delta * 2, 4)
             else:
-                snapshot['price_delta_30m'] = 0.0
+                snapshot['price_delta_30m']  = 0.0
                 snapshot['volume_delta_30m'] = 0.0
-                snapshot['price_velocity'] = 0.0
+                snapshot['price_velocity']   = 0.0
 
             self.snapshot_history[market_id] = {
-                'yes_price': snapshot['yes_price'],
+                'yes_price':   snapshot['yes_price'],
                 'volume_24hr': snapshot['volume_24hr'],
-                'timestamp': now.isoformat()
+                'timestamp':   now.isoformat()
             }
 
         return snapshots
 
+    # ==================== SIGNAL HANDLING ====================
+
+    def _process_signal(self, result: Dict[str, Any], snapshot: Dict[str, Any], cycle: int) -> bool:
+        """
+        Persist + notify a single confirmed signal.
+        Returns True if signal was new (not duplicate).
+        """
+        market_id = result.get('market_id', snapshot.get('id', ''))
+
+        # Deduplication check
+        if self.store.is_duplicate(market_id):
+            logger.debug(f"⏭️ Duplicate skipped: {result.get('question', '')[:45]}")
+            return False
+
+        # Enrich signal with snapshot data for storage
+        enriched = {
+            **result,
+            'market_id':   market_id,
+            'yes_price':   snapshot.get('yes_price', 0.5),
+            'volume_24hr': snapshot.get('volume_24hr', 0),
+            'spike_ratio': snapshot.get('spike_ratio', 1.0),
+            'end_date_iso': snapshot.get('end_date_iso'),
+            'cycle':       cycle,
+            'detected_at': datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Persist
+        row_id = self.store.save(enriched)
+
+        # Notify via Telegram
+        sent = self.notifier.send_signal(enriched)
+        if sent:
+            self.store.mark_telegram_sent(row_id)
+
+        logger.info(
+            f"📣 SIGNAL #{row_id}: {result.get('question', '')[:50]} | "
+            f"Trade={result.get('recommended_trade')} | "
+            f"Conf={result.get('confidence_score', 0):.2f} | "
+            f"Telegram={'✅' if sent else '⏭️'}"
+        )
+
+        return True
+
     # ==================== MAIN CYCLE ====================
 
     def run_cycle(self) -> Dict[str, Any]:
-        """
-        Execute one full detection cycle.
-        Returns cycle summary dict.
-        """
+        """Execute one full detection cycle."""
         cycle_start = time.time()
         self.cycle_count += 1
         logger.info(f"{'='*50}")
@@ -105,7 +134,7 @@ class Orchestrator:
 
         self.analyzer.reset_cycle_counters()
 
-        # ── Step 1: Fetch markets ────────────────────────────────────────
+        # ── Step 1: Fetch ────────────────────────────────────────────────
         logger.info("📡 Step 1: Fetching markets...")
         markets = self.fetcher.get_active_markets(limit=None, max_pages=config.MAX_PAGES)
 
@@ -117,7 +146,7 @@ class Orchestrator:
             }
         logger.info(f"✅ {len(markets)} markets fetched")
 
-        # ── Step 2: Build snapshots ──────────────────────────────────────
+        # ── Step 2: Snapshots ────────────────────────────────────────────
         logger.info("📸 Step 2: Building snapshots...")
         snapshots = self.fetcher.get_snapshots_batch(markets)
         logger.info(f"✅ {len(snapshots)} snapshots built")
@@ -126,10 +155,9 @@ class Orchestrator:
         logger.info("📈 Step 3: Price velocity enrichment...")
         snapshots = self.enrich_with_price_velocity(snapshots)
 
-        # ── Step 4: Anomaly detection (all markets, no API calls) ────────
+        # ── Step 4: Anomaly detection ────────────────────────────────────
         logger.info(f"🔍 Step 4: Anomaly detection on {len(snapshots)} markets...")
         anomaly_results = self.detector.batch_detect(snapshots)
-
         snapshot_map = {s['id']: s for s in snapshots}
 
         # ── Step 5: Filter for Mistral ───────────────────────────────────
@@ -137,7 +165,6 @@ class Orchestrator:
             r for r in anomaly_results
             if r.get('score', 0) >= config.MISTRAL_THRESHOLD
         ]
-        # Cap to budget: max_calls × batch_size markets
         max_markets = config.MAX_MISTRAL_CALLS_PER_CYCLE * config.MISTRAL_BATCH_SIZE
         flagged = flagged[:max_markets]
         logger.info(
@@ -147,11 +174,13 @@ class Orchestrator:
 
         # ── Step 6: Mistral validation ───────────────────────────────────
         signals = []
+        new_signals = 0
+
         if flagged:
-            n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)  # ceil div
+            n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)
             logger.info(
-                f"🧠 Step 6: Mistral analysis "
-                f"({len(flagged)} markets, ~{n_calls} API calls)..."
+                f"🧠 Step 6: Mistral ({len(flagged)} markets, "
+                f"~{n_calls} API calls)..."
             )
 
             mistral_items = [
@@ -164,46 +193,52 @@ class Orchestrator:
             for result in mistral_results:
                 if (result.get('anomaly_detected')
                         and result.get('confidence_score', 0) >= 0.65):
-                    signal = {
-                        **result,
-                        'cycle': self.cycle_count,
-                        'detected_at': datetime.now(timezone.utc).isoformat()
-                    }
-                    signals.append(signal)
-                    self.signals.append(signal)
-                    logger.info(
-                        f"📣 SIGNAL: {result.get('question', '')[:55]} | "
-                        f"Trade={result.get('recommended_trade')} | "
-                        f"Conf={result.get('confidence_score', 0):.2f}"
-                    )
+
+                    market_id = result.get('market_id', '')
+                    snapshot  = snapshot_map.get(market_id, {})
+
+                    is_new = self._process_signal(result, snapshot, self.cycle_count)
+                    if is_new:
+                        signals.append(result)
+                        new_signals += 1
 
         cycle_time = time.time() - cycle_start
 
+        # ── Step 7: Store stats ──────────────────────────────────────────
+        db_stats = self.store.get_stats()
+        logger.info(
+            f"📦 DB: {db_stats['total_signals']} total | "
+            f"{db_stats['signals_24h']} (24h) | "
+            f"{db_stats['telegram_unsent']} unsent"
+        )
+
         summary = {
-            'cycle': self.cycle_count,
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'markets_fetched': len(markets),
-            'snapshots_built': len(snapshots),
+            'cycle':             self.cycle_count,
+            'timestamp':         datetime.now(timezone.utc).isoformat(),
+            'markets_fetched':   len(markets),
+            'snapshots_built':   len(snapshots),
             'anomalies_detected': len(flagged),
-            'signals': signals,
-            'signal_count': len(signals),
-            'mistral_calls': self.analyzer.call_count,
-            'cycle_time_sec': round(cycle_time, 2)
+            'signals':           signals,
+            'signal_count':      new_signals,
+            'mistral_calls':     self.analyzer.call_count,
+            'cycle_time_sec':    round(cycle_time, 2),
+            'db_stats':          db_stats,
         }
 
         logger.info(
             f"✅ Cycle #{self.cycle_count} complete | "
             f"{len(markets)} markets | "
             f"{len(flagged)} anomalies | "
-            f"{len(signals)} signals | "
+            f"{new_signals} new signals | "
             f"{cycle_time:.1f}s"
         )
 
         return summary
 
     def run(self, max_cycles: int = None):
-        """Main polling loop. Runs indefinitely or until max_cycles reached."""
-        logger.info(f"🚀 PolyAugur started | Poll interval: {config.POLL_INTERVAL_SEC}s")
+        """Main polling loop."""
+        logger.info(f"🚀 PolyAugur Phase 6 | Poll: {config.POLL_INTERVAL_SEC}s | "
+                    f"DB: {config.SIGNAL_DB_PATH}")
 
         cycle = 0
         while True:
@@ -212,14 +247,16 @@ class Orchestrator:
                 cycle += 1
 
                 if max_cycles and cycle >= max_cycles:
-                    logger.info(f"Max cycles ({max_cycles}) reached, stopping")
+                    logger.info(f"Max cycles ({max_cycles}) reached")
                     break
 
-                logger.info(f"💤 Sleeping {config.POLL_INTERVAL_SEC}s until next cycle...")
+                logger.info(f"💤 Sleeping {config.POLL_INTERVAL_SEC}s...")
                 time.sleep(config.POLL_INTERVAL_SEC)
 
             except KeyboardInterrupt:
                 logger.info("⛔ Stopped by user")
+                final_stats = self.store.get_stats()
+                logger.info(f"📦 Final DB: {final_stats}")
                 break
             except Exception as e:
                 logger.error(f"Cycle error: {e}", exc_info=True)
@@ -228,24 +265,25 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 5 (Clean)")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 6")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle...")
+    print("\n[Test 1] Single cycle (Phase 6 with DB + Telegram)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
     print(f"   Markets fetched:    {summary['markets_fetched']}")
     print(f"   Snapshots built:    {summary['snapshots_built']}")
     print(f"   Anomalies flagged:  {summary['anomalies_detected']}")
-    print(f"   Signals generated:  {summary['signal_count']}")
+    print(f"   New signals:        {summary['signal_count']}")
     print(f"   Mistral calls:      {summary['mistral_calls']}")
     print(f"   Cycle time:         {summary['cycle_time_sec']}s")
+    print(f"   DB stats:           {summary['db_stats']}")
 
     if summary['signals']:
-        print(f"\n🚨 Signals this cycle:")
+        print(f"\n🚨 New signals:")
         for s in summary['signals']:
             print(f"   • {s.get('question', '')[:60]}")
             print(
@@ -254,10 +292,10 @@ def main():
                 f"Risk: {s.get('risk_level')}"
             )
     else:
-        print(f"\n   No high-confidence signals this cycle (normal)")
+        print("\n   No new signals (may be duplicates or below threshold)")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 5 Orchestrator: PASSED")
+    print("✅ Phase 6 Orchestrator: PASSED")
     print("=" * 60)
 
 
