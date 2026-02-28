@@ -1,7 +1,7 @@
 """
 PolyAugur Data Fetcher - Polymarket Gamma API Integration
 Fetches markets with pagination support (up to 1000+ markets).
-Author: Diego Ringleb | Phase 2+4 | 2026-02-28
+Author: Diego Ringleb | Phase 2+4+5 | 2026-02-28
 Architecture: mache-es-sehr-viel-ausfuhrlicher.md [file:1]
 """
 
@@ -9,6 +9,7 @@ import requests
 import pandas as pd
 import time
 import logging
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any
 import config
@@ -86,7 +87,10 @@ class PolymarketFetcher:
             return False
 
     def is_sports_or_live_event(self, market: Dict[str, Any]) -> bool:
-        """Exclude live sports events (price-distorting during play)."""
+        """
+        Exclude large sports events where manipulation is highly unlikely.
+        Checks both tags AND question text.
+        """
         tags = market.get('tags', [])
         tag_labels = []
         for tag in tags:
@@ -96,14 +100,35 @@ class PolymarketFetcher:
                 tag_labels.append(tag.lower())
 
         question = market.get('question', '').lower()
-        sport_keywords = ['nfl', 'nba', 'mlb', 'nhl', 'soccer', 'basketball',
-                          'baseball', 'sports', 'live', 'real-time']
-        sport_patterns = ['vs ', ' game ', ' match ', ' score']
 
+        # Sports leagues & keywords (checked against BOTH tags and question)
+        sport_keywords = [
+            # American sports
+            'nfl', 'nba', 'mlb', 'nhl', 'mls',
+            'super bowl', 'stanley cup', 'world series', 'nba finals',
+            # European football
+            'bundesliga', 'champions league', 'premier league', 'la liga',
+            'serie a', 'ligue 1', 'europa league', 'uefa',
+            # General sports
+            'fifa', 'world cup', 'olympics', 'formula 1', 'f1 ',
+            'wimbledon', 'ufc', 'boxing',
+            # College sports
+            'ncaa', 'college football', 'college basketball',
+        ]
+
+        # Structural patterns (question text only)
+        sport_patterns = ['vs ', ' game ', ' match ', ' score', 'playoff', 'championship']
+
+        # Check tags
         if any(kw in lbl for lbl in tag_labels for kw in sport_keywords):
+            return True
+
+        # Check question text against both lists
+        if any(kw in question for kw in sport_keywords):
             return True
         if any(p in question for p in sport_patterns):
             return True
+
         return False
 
     def _normalize_market(self, market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -142,19 +167,13 @@ class PolymarketFetcher:
         """
         Fetch ALL available markets using pagination.
         Gamma API: max 100 per request, uses offset for pagination.
-
-        Args:
-            max_pages: Override config.MAX_PAGES (default). Set lower for testing.
-
-        Returns:
-            List of ALL raw normalized markets before filtering.
         """
         max_pages = max_pages or config.MAX_PAGES
         all_markets = []
         offset = 0
         page = 0
 
-        logger.info(f"🔄 Starting paginated fetch (max {max_pages} pages × {config.MARKETS_PER_PAGE} = {max_pages * config.MARKETS_PER_PAGE} markets)")
+        logger.info(f"🔄 Paginated fetch (max {max_pages} pages × {config.MARKETS_PER_PAGE} = {max_pages * config.MARKETS_PER_PAGE} markets)")
 
         while page < max_pages:
             data = self._api_get(
@@ -169,48 +188,34 @@ class PolymarketFetcher:
             )
 
             if not data:
-                logger.warning(f"Page {page+1}: No data returned, stopping pagination")
+                logger.warning(f"Page {page+1}: No data, stopping pagination")
                 break
 
             if not isinstance(data, list) or len(data) == 0:
-                logger.info(f"Page {page+1}: Empty response, end of markets")
+                logger.info(f"Page {page+1}: Empty, end of markets")
                 break
 
-            # Normalize all markets from this page
             normalized = [self._normalize_market(m) for m in data]
             normalized = [m for m in normalized if m is not None]
             all_markets.extend(normalized)
 
             logger.info(f"📄 Page {page+1}: +{len(normalized)} markets (total: {len(all_markets)})")
 
-            # If we got fewer than requested, we've reached the end
             if len(data) < config.MARKETS_PER_PAGE:
-                logger.info(f"Last page reached (got {len(data)} < {config.MARKETS_PER_PAGE})")
+                logger.info(f"Last page reached ({len(data)} < {config.MARKETS_PER_PAGE})")
                 break
 
             offset += config.MARKETS_PER_PAGE
             page += 1
-
-            # Small delay to be respectful of API
             time.sleep(0.2)
 
-        logger.info(f"✅ Pagination complete: {len(all_markets)} total raw markets across {page+1} pages")
+        logger.info(f"✅ Pagination complete: {len(all_markets)} markets across {page+1} pages")
         return all_markets
 
     def get_active_markets(self, limit: int = 20, max_pages: int = None) -> List[Dict[str, Any]]:
         """
         Fetch and filter active markets with pagination support.
-
-        Two-stage pipeline:
-        1. Paginated fetch → all raw markets
-        2. Filter: volume + time validity + sports exclusion
-
-        Args:
-            limit: Max markets to return after filtering
-            max_pages: Pagination depth (default: config.MAX_PAGES = 1000 markets)
-
-        Returns:
-            List of validated, active, filtered market dicts
+        No volume-based sorting – anomaly_detector ranks by relative score.
         """
         all_markets = self.fetch_all_markets_paginated(max_pages=max_pages)
 
@@ -218,37 +223,59 @@ class PolymarketFetcher:
             logger.error("No markets fetched via pagination")
             return []
 
-        # Filter 1: Volume threshold
         volume_filtered = [
             m for m in all_markets
             if m.get('volume_24hr', 0) >= config.MIN_VOLUME_24H
         ]
         logger.info(f"📊 Volume filter: {len(volume_filtered)}/{len(all_markets)} markets ≥${config.MIN_VOLUME_24H}")
 
-        # Filter 2: Truly active (closing >6h)
         time_filtered = [m for m in volume_filtered if self.is_valid_active_market(m)]
         logger.info(f"⏰ Time filter: {len(time_filtered)} markets closing >6h from now")
 
-        # Filter 3: Exclude sports/live
         final_markets = [m for m in time_filtered if not self.is_sports_or_live_event(m)]
         logger.info(f"✅ Final: {len(final_markets)} markets after all filters")
 
         if not final_markets:
             logger.warning("⚠️ No markets passed all filters")
 
-        # NO sorting by volume here - anomaly_detector will rank by relative score
         return final_markets[:limit] if limit else final_markets
 
     def get_market_snapshot(self, market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Build market snapshot for anomaly detection."""
+        """
+        Build market snapshot with real baseline from createdAt + all-time volume.
+        Phase 5: Replaces placeholder baseline (volume_24hr * 0.8).
+
+        Baseline = all-time volume / market age in days → real daily average.
+        spike_ratio = volume_24hr / baseline → true relative spike indicator.
+        """
         try:
             outcome_prices = market.get('outcomePrices', ['0.5', '0.5'])
             if isinstance(outcome_prices, str):
-                import json
                 outcome_prices = json.loads(outcome_prices)
 
             yes_price = float(outcome_prices[0]) if len(outcome_prices) > 0 else 0.5
             no_price = float(outcome_prices[1]) if len(outcome_prices) > 1 else 0.5
+
+            volume_24hr = float(market.get('volume_24hr', 0))
+            volume_total = float(market.get('volume', volume_24hr))
+
+            # Real baseline: all-time volume / market age in days
+            now = datetime.now(timezone.utc)
+            age_days = 30  # Conservative fallback
+            try:
+                created_str = (
+                    market.get('createdAt') or
+                    market.get('created_at') or
+                    market.get('startDate') or ''
+                )
+                if created_str:
+                    created = datetime.fromisoformat(created_str.replace('Z', '+00:00'))
+                    age_days = max((now - created).days, 1)
+            except (ValueError, TypeError, AttributeError):
+                pass
+
+            avg_daily_baseline = volume_total / age_days if age_days > 0 else volume_24hr * 0.5
+            spike_ratio = volume_24hr / avg_daily_baseline if avg_daily_baseline > 0 else 1.0
 
             return {
                 'id': market.get('id'),
@@ -259,20 +286,25 @@ class PolymarketFetcher:
                 'yes_price': yes_price,
                 'no_price': no_price,
                 'spread': abs(yes_price - no_price),
-                'volume_24hr': market.get('volume_24hr', 0),
-                'volume': float(market.get('volume', 0)),
+                'volume_24hr': volume_24hr,
+                'volume': volume_total,
                 'liquidity': float(market.get('liquidity', market.get('liquidityNum', 0))),
                 'active': market.get('active', True),
                 'closed': market.get('closed', False),
                 'end_date_iso': market.get('end_date_iso'),
                 'tags': market.get('tags', []),
                 'event_slug': market.get('event_slug', market.get('eventSlug')),
-                # Phase 3 anomaly fields
+                # Real baseline fields (Phase 5)
+                'baseline': round(avg_daily_baseline, 2),
+                'current_volume': volume_24hr,
+                'spike_ratio': round(spike_ratio, 3),
+                'age_days': age_days,
+                # Enriched by orchestrator (Phase 5)
                 'holders': [],
                 'volumes_history': [],
-                'baseline': market.get('volume_24hr', 0) * 0.8,
-                'current_volume': market.get('volume_24hr', 0),
-                'spike_ratio': 1.0
+                'price_delta_30m': 0.0,
+                'volume_delta_30m': 0.0,
+                'price_velocity': 0.0
             }
         except Exception as e:
             logger.error(f"Snapshot error for {market.get('id')}: {e}", exc_info=True)
@@ -307,7 +339,7 @@ class PolymarketFetcher:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Data Fetcher Test - Phase 4 (Scale)")
+    logger.info("🧪 PolyAugur Data Fetcher Test - Phase 5 (Real Baseline)")
     logger.info("=" * 60)
 
     fetcher = PolymarketFetcher()
@@ -320,23 +352,39 @@ def main():
         return
 
     print(f"✅ PASS: {len(markets)} valid markets fetched")
-    print(f"   Top: {markets[0]['question'][:65]}")
 
-    print(f"\n[Test 2] Batch snapshots ({min(5, len(markets))} markets)...")
+    print(f"\n[Test 2] Batch snapshots with real baseline...")
     snapshots = fetcher.get_snapshots_batch(markets[:5])
     print(f"✅ PASS: {len(snapshots)} snapshots built")
+    print(f"\n{'#':<3} {'Spike':<8} {'Age':<8} {'Baseline':<14} {'Vol 24h':<14} {'Question':<40}")
+    print("-" * 90)
+    for i, s in enumerate(snapshots, 1):
+        print(
+            f"{i:<3} {s.get('spike_ratio', 0):<8.2f} "
+            f"{s.get('age_days', 0):<8}d "
+            f"${s.get('baseline', 0):<13,.0f} "
+            f"${s.get('volume_24hr', 0):<13,.0f} "
+            f"{s.get('question', '')[:38]}"
+        )
 
-    print(f"\n[Test 3] Volume distribution...")
-    vols = sorted([m.get('volume_24hr', 0) for m in markets], reverse=True)
-    print(f"   Max: ${vols[0]:,.0f} | Min: ${vols[-1]:,.0f} | Median: ${vols[len(vols)//2]:,.0f}")
+    print(f"\n[Test 3] Sports filter check (should be 0 sports markets)...")
+    sport_check = ['nhl', 'nba', 'nfl', 'bundesliga', 'champions league',
+                   'stanley cup', 'playoff', 'championship']
+    leaked = [m for m in markets if any(kw in m.get('question', '').lower() for kw in sport_check)]
+    if leaked:
+        print(f"❌ {len(leaked)} sports markets leaked through:")
+        for m in leaked:
+            print(f"   - {m['question'][:60]}")
+    else:
+        print(f"✅ PASS: 0 sports markets in {len(markets)} results")
 
-    print(f"\n{'#':<3} {'Volume':<14} {'Question':<55}")
-    print("-" * 75)
-    for i, m in enumerate(markets[:5], 1):
-        print(f"{i:<3} ${m.get('volume_24hr', 0):<13,.0f} {m.get('question', '')[:52]}")
+    print(f"\n[Test 4] Baseline sanity check...")
+    for s in snapshots[:3]:
+        status = "✅" if s.get('baseline', 0) > 0 and s.get('spike_ratio', 1.0) != 1.0 else "⚠️ Placeholder!"
+        print(f"   {status} Age={s.get('age_days')}d | Baseline=${s.get('baseline', 0):,.0f} | Spike={s.get('spike_ratio', 0):.2f}x")
 
     print("\n" + "=" * 60)
-    print(f"✅ Phase 4 Data Layer: PASSED | {len(markets)} markets ready")
+    print(f"✅ Phase 5 Data Fetcher: PASSED")
     print("=" * 60)
 
 
