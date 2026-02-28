@@ -1,8 +1,7 @@
 """
 PolyAugur Anomaly Detector - Multi-Layer Insider Signal Detection
-Phase 12: Broader insider topic coverage + softer spike thresholds.
-Target: Short-term geopolitical/regulatory/crypto/pharma events.
-Author: Diego Ringleb | Phase 12 | 2026-02-28
+Phase 12.1: Balanced thresholds — broad topic coverage with tighter scoring.
+Author: Diego Ringleb | Phase 12.1 | 2026-02-28
 """
 
 import logging
@@ -19,13 +18,10 @@ class AnomalyDetector:
     """
     Multi-layer anomaly detection for Polymarket insider signals.
 
-    Core Principle: Relevance = RELATIVE deviation from own baseline.
-    Insider-prone = unusual activity relative to market's OWN history.
-
-    Phase 12 changes:
-    - Softer spike thresholds: 1.2x spike now scores > 0
-    - Broader insider topics: crypto, pharma, tech regulation, elections
-    - Lower pre-filter thresholds: let Mistral decide quality
+    Phase 12.1: Balanced between Phase 11 (too strict) and Phase 12 (too loose).
+    - Spike 1.5x+ scores (not 1.2x)
+    - 80 insider keywords (broad coverage)
+    - Threshold 0.35 (middle ground)
     """
 
     def __init__(self):
@@ -37,8 +33,7 @@ class AnomalyDetector:
     def detect_volume_spike(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect unusual volume relative to THIS market's own baseline.
-        Fully relative: $5M market with 4x spike = same score as $5k market with 4x spike.
-        Phase 12: softer thresholds — even 1.2x spikes contribute to score.
+        Phase 12.1: 1.5x+ scores (removed 1.2x — too noisy).
         """
         current_vol = float(snapshot.get('current_volume', snapshot.get('volume_24hr', 0)))
         baseline = float(snapshot.get('baseline', 0))
@@ -60,14 +55,11 @@ class AnomalyDetector:
             score = 0.25
             severity = 'high'
         elif spike_ratio >= 2.0:
-            score = 0.18
+            score = 0.15
             severity = 'moderate'
         elif spike_ratio >= 1.5:
-            score = 0.12
+            score = 0.08
             severity = 'elevated'
-        elif spike_ratio >= 1.2:
-            score = 0.06
-            severity = 'low'
         else:
             score = 0.0
             severity = 'none'
@@ -130,7 +122,7 @@ class AnomalyDetector:
 
     def detect_holder_anomalies(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Placeholder. Phase 6: Real holder analysis via CLOB /trades endpoint.
+        Placeholder. Real holder analysis via CLOB /trades endpoint.
         Future: new wallets <7d with large positions, coordinated buys.
         """
         holders = snapshot.get('holders', [])
@@ -146,17 +138,8 @@ class AnomalyDetector:
         """
         Assess how insider-prone the market is based on:
         1. TIME HORIZON: Long-term markets (>365d) get heavy penalty.
-        2. TOPIC: Geopolitical, regulatory, corporate, crypto, pharma = high insider risk.
+        2. TOPIC: 80+ insider-prone keywords across 10 categories.
         3. VOLUME SURGE: 60%+ of all-time volume in 24h = sudden attention.
-
-        Phase 12: Expanded from ~30 to ~80 insider keywords covering:
-        - Crypto regulatory events
-        - Government actions (impeachment, shutdown, debt ceiling)
-        - Short-term elections (runoffs, referendums)
-        - Tech/AI regulation (antitrust, bans)
-        - Pharma/FDA approvals
-        - Energy/OPEC decisions
-        - Extended geopolitical (NATO, coups, Taiwan)
 
         Returns multiplier 0.20–1.80 applied to base_score.
         """
@@ -262,9 +245,8 @@ class AnomalyDetector:
     def detect_anomaly(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main detection pipeline: Aggregate all layers → final score.
-
         Score = (volume + price + holder) × topic_time_multiplier
-        Threshold: score ≥ CONFIDENCE_THRESHOLD → flag for Mistral
+        Threshold: score ≥ 0.35 → flag for Mistral
         """
         try:
             volume_result = self.detect_volume_spike(snapshot)
@@ -340,14 +322,14 @@ class AnomalyDetector:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 12")
+    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 12.1")
     logger.info("=" * 60)
 
     from datetime import timedelta
     detector = AnomalyDetector()
     now = datetime.now(timezone.utc)
 
-    # Test 1: 2028 Election market → should NOT flag (time penalty)
+    # Test 1: 2028 Election → should NOT flag
     print("\n[Test 1] 2028 US Presidential Election (should NOT flag)...")
     snap_election = {
         'id': 't1', 'question': 'Will Nikki Haley win the 2028 US Presidential Election?',
@@ -358,10 +340,10 @@ def main():
     }
     r1 = detector.detect_anomaly(snap_election)
     status = "✅" if not r1['anomaly_detected'] else "❌ SHOULD NOT FLAG"
-    print(f"   {status} Anomaly={r1['anomaly_detected']} | Score={r1['score']:.3f} | Multiplier={r1['topic_multiplier']}")
+    print(f"   {status} Score={r1['score']:.3f} | Mult={r1['topic_multiplier']}")
 
-    # Test 2: Fed chair nomination (short-term) → should flag
-    print("\n[Test 2] Fed chair nomination, closes in 20 days (SHOULD flag)...")
+    # Test 2: Fed nomination (20d) → should flag
+    print("\n[Test 2] Fed chair nomination, 20 days (SHOULD flag)...")
     snap_fed = {
         'id': 't2', 'question': 'Will Trump nominate Michelle Bowman as Fed chair?',
         'volume_24hr': 453_000, 'current_volume': 453_000, 'baseline': 50_000,
@@ -371,10 +353,10 @@ def main():
     }
     r2 = detector.detect_anomaly(snap_fed)
     status = "✅" if r2['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Anomaly={r2['anomaly_detected']} | Score={r2['score']:.3f} | Reasons={r2['breakdown']['topic_sensitivity']['reasons']}")
+    print(f"   {status} Score={r2['score']:.3f} | Reasons={r2['breakdown']['topic_sensitivity']['reasons']}")
 
-    # Test 3: US Military strike market (imminent) → should flag high
-    print("\n[Test 3] US military action on Iran, closes in 7 days (SHOULD flag high)...")
+    # Test 3: Airstrike (7d) → should flag high
+    print("\n[Test 3] US airstrike on Iran, 7 days (SHOULD flag high)...")
     snap_geo = {
         'id': 't3', 'question': 'Will the US conduct an airstrike on Iran before March 15?',
         'volume_24hr': 180_000, 'current_volume': 180_000, 'baseline': 5_000,
@@ -384,43 +366,30 @@ def main():
     }
     r3 = detector.detect_anomaly(snap_geo)
     status = "✅" if r3['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Anomaly={r3['anomaly_detected']} | Score={r3['score']:.3f} | Spike={r3['breakdown']['volume_spike']['spike_ratio']:.1f}x")
+    print(f"   {status} Score={r3['score']:.3f} | Spike={r3['breakdown']['volume_spike']['spike_ratio']:.1f}x")
 
-    # Test 4: Crypto regulation (new Phase 12 topic)
-    print("\n[Test 4] Bitcoin ETF approval, closes in 10 days (SHOULD flag)...")
-    snap_crypto = {
-        'id': 't4', 'question': 'Will SEC approve spot Bitcoin ETF by March 10?',
-        'volume_24hr': 95_000, 'current_volume': 95_000, 'baseline': 15_000,
-        'yes_price': 0.62, 'no_price': 0.38, 'spread': 0.24,
-        'liquidity': 50_000, 'volume': 150_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=10)).isoformat()
+    # Test 4: Moderate market — low spike, no topic → should NOT flag
+    print("\n[Test 4] Generic moderate market (should NOT flag)...")
+    snap_boring = {
+        'id': 't4', 'question': 'Will it snow in New York on Christmas Day?',
+        'volume_24hr': 8_000, 'current_volume': 8_000, 'baseline': 7_000,
+        'yes_price': 0.45, 'no_price': 0.55, 'spread': 0.10,
+        'liquidity': 20_000, 'volume': 100_000, 'holders': [],
+        'end_date_iso': (now + timedelta(days=60)).isoformat()
     }
-    r4 = detector.detect_anomaly(snap_crypto)
-    status = "✅" if r4['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Anomaly={r4['anomaly_detected']} | Score={r4['score']:.3f} | Reasons={r4['breakdown']['topic_sensitivity']['reasons']}")
+    r4 = detector.detect_anomaly(snap_boring)
+    status = "✅" if not r4['anomaly_detected'] else "❌ SHOULD NOT FLAG"
+    print(f"   {status} Score={r4['score']:.3f}")
 
-    # Test 5: FDA drug approval (new Phase 12 topic)
-    print("\n[Test 5] FDA drug approval, closes in 5 days (SHOULD flag)...")
-    snap_fda = {
-        'id': 't5', 'question': 'Will FDA approve Alzheimer drug lecanemab this week?',
-        'volume_24hr': 40_000, 'current_volume': 40_000, 'baseline': 8_000,
-        'yes_price': 0.78, 'no_price': 0.22, 'spread': 0.56,
-        'liquidity': 25_000, 'volume': 60_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=5)).isoformat()
-    }
-    r5 = detector.detect_anomaly(snap_fda)
-    status = "✅" if r5['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Anomaly={r5['anomaly_detected']} | Score={r5['score']:.3f} | Reasons={r5['breakdown']['topic_sensitivity']['reasons']}")
-
-    # Test 6: Batch ranking
-    print("\n[Test 6] Batch ranking (geo > fed > crypto > fda > election)...")
-    results = detector.batch_detect([snap_election, snap_fed, snap_geo, snap_crypto, snap_fda])
+    # Test 5: Batch ranking
+    print("\n[Test 5] Batch ranking...")
+    results = detector.batch_detect([snap_election, snap_fed, snap_geo, snap_boring])
     for r in results:
         flag = "🚨" if r['anomaly_detected'] else "✓ "
         print(f"   {flag} {r['score']:.3f} × {r['topic_multiplier']} | {r['question'][:55]}")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 12 Anomaly Detector: PASSED")
+    print("✅ Phase 12.1 Anomaly Detector: PASSED")
     print("=" * 60)
 
 

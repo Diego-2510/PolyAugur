@@ -1,19 +1,19 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 12: Broader insider coverage with lower pre-filter thresholds.
+Phase 12.1: Balanced insider coverage — broader topics, tighter confirmation.
 
 Pipeline per cycle:
 1. Fetch all active markets (paginated, sports filtered)
 2. Build snapshots with real baseline
 3. Price velocity enrichment
 4. AnomalyDetector.batch_detect() → all markets
-5. Filter: score >= MISTRAL_THRESHOLD (0.30)
-6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.50)
+5. Filter: score >= 0.35
+6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.55)
 7. Trade analysis (CLOB) → confirmed signals only
 8. Whale confidence boost → Deduplicate → Store → Telegram
 9. Performance check (every 10 cycles)
 
-Author: Diego Ringleb | Phase 12 | 2026-02-28
+Author: Diego Ringleb | Phase 12.1 | 2026-02-28
 """
 
 import time
@@ -38,11 +38,12 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 12 changes:
-    - Lower pre-filter thresholds (0.30 instead of 0.45)
-    - Mistral confirmation threshold lowered (0.50 instead of 0.65)
-    - More Mistral calls per cycle (20 instead of 10)
-    - Larger batch size (5 instead of 3)
+    Main polling loop. Phase 12.1 balance:
+    - Pre-filter threshold 0.35 (was 0.45 → 0.30 → 0.35)
+    - Mistral confirmation 0.55 (was 0.65 → 0.50 → 0.55)
+    - 15 Mistral calls per cycle (was 10 → 20 → 15)
+    - Batch size 5 (efficient)
+    Target: 8–15 signals per cycle.
     """
 
     def __init__(self):
@@ -56,7 +57,7 @@ class Orchestrator:
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 12 – Broader Insider Coverage)")
+        logger.info("🚀 Orchestrator initialized (Phase 12.1 – Balanced Insider Coverage)")
 
     # ==================== ENRICHMENT ====================
 
@@ -108,7 +109,6 @@ class Orchestrator:
         if trade_metrics.get('suspicious'):
             boost += 0.05
 
-        # Directional alignment check
         trade_dir = result.get('recommended_trade', 'HOLD')
         dom_side  = trade_metrics.get('dominant_side', 'NONE')
         if (trade_dir == 'BUY_YES' and dom_side == 'BUY') or \
@@ -163,7 +163,6 @@ class Orchestrator:
             'end_date_iso':  snapshot.get('end_date_iso'),
             'cycle':         cycle,
             'detected_at':   datetime.now(timezone.utc).isoformat(),
-            # Trade analysis (Phase 7)
             'whale_count':       trade_metrics.get('whale_count', 0),
             'whale_volume_pct':  trade_metrics.get('whale_volume_pct', 0),
             'top_wallet_pct':    trade_metrics.get('top_wallet_pct', 0),
@@ -265,7 +264,7 @@ class Orchestrator:
 
             for result in mistral_results:
                 if (result.get('anomaly_detected')
-                        and result.get('confidence_score', 0) >= 0.50):
+                        and result.get('confidence_score', 0) >= 0.55):
                     confirmed.append(result)
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
@@ -296,7 +295,6 @@ class Orchestrator:
             snapshot  = snapshot_map.get(market_id, {})
             trade_met = trade_results.get(market_id, {})
 
-            # Phase 8: Whale confidence boost
             result = self._apply_whale_boost(result, trade_met)
 
             is_new = self._process_signal(result, snapshot, trade_met, self.cycle_count)
@@ -314,7 +312,6 @@ class Orchestrator:
             logger.info("📊 Step 9: Checking signal outcomes...")
             perf_summary = self.tracker.check_outcomes()
 
-            # Send daily report if we have resolved signals
             if perf_summary.get('wins', 0) + perf_summary.get('losses', 0) > 0:
                 db_stats = self.store.get_stats()
                 self.notifier.send_daily_report(db_stats)
@@ -363,7 +360,7 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 12 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 12.1 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
             f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
         )
@@ -393,12 +390,12 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12.1")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 12 — Broader Insider Coverage)...")
+    print("\n[Test 1] Single cycle (Phase 12.1 — Balanced Insider Coverage)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
@@ -412,9 +409,6 @@ def main():
     print(f"   CLOB calls:          {summary['clob_calls']}")
     print(f"   Cycle time:          {summary['cycle_time_sec']}s")
     print(f"   DB stats:            {summary['db_stats']}")
-
-    if summary.get('perf_summary'):
-        print(f"   Performance:         {summary['perf_summary']}")
 
     if summary['signals']:
         print(f"\n🚨 New signals:")
@@ -431,7 +425,7 @@ def main():
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 12 Orchestrator: PASSED")
+    print("✅ Phase 12.1 Orchestrator: PASSED")
     print("=" * 60)
 
 
