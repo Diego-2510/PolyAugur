@@ -22,7 +22,6 @@ class PolymarketFetcher:
     """
     Fetches market data from Polymarket Gamma API.
     Supports pagination for large-scale market coverage (100-1000+ markets).
-    Based on PolyAugur architecture [file:1] Abschnitt 4.
     """
 
     def __init__(self):
@@ -49,8 +48,8 @@ class PolymarketFetcher:
                     logger.warning(f"Rate limit on {endpoint}, backoff {delay:.1f}s")
                     time.sleep(delay)
                     continue
-                if resp.status_code in (404, 422):
-                    logger.error(f"HTTP {resp.status_code}: {url}")
+                if resp.status_code in (400, 404, 422):
+                    logger.debug(f"HTTP {resp.status_code}: {url} → {resp.text[:80]}")
                     return None
 
                 resp.raise_for_status()
@@ -69,7 +68,7 @@ class PolymarketFetcher:
         return None
 
     def is_valid_active_market(self, market: Dict[str, Any]) -> bool:
-        """Market must close >6h from now. Rejects already-closed markets."""
+        """Market must close >6h from now."""
         now = datetime.now(timezone.utc)
         end_date_str = None
         for field in ['end_date_iso', 'endDate', 'closesAt', 'end_date']:
@@ -88,8 +87,9 @@ class PolymarketFetcher:
 
     def is_sports_or_live_event(self, market: Dict[str, Any]) -> bool:
         """
-        Exclude large sports events where manipulation is highly unlikely.
+        Exclude sports & live events where insider manipulation is highly unlikely.
         Checks both tags AND question text.
+        Covers: American sports, European football, golf, tennis, motor racing, combat sports.
         """
         tags = market.get('tags', [])
         tag_labels = []
@@ -101,29 +101,41 @@ class PolymarketFetcher:
 
         question = market.get('question', '').lower()
 
-        # Sports leagues & keywords (checked against BOTH tags and question)
         sport_keywords = [
-            # American sports
+            # American sports leagues
             'nfl', 'nba', 'mlb', 'nhl', 'mls',
             'super bowl', 'stanley cup', 'world series', 'nba finals',
             # European football
             'bundesliga', 'champions league', 'premier league', 'la liga',
             'serie a', 'ligue 1', 'europa league', 'uefa',
-            # General sports
-            'fifa', 'world cup', 'olympics', 'formula 1', 'f1 ',
-            'wimbledon', 'ufc', 'boxing',
+            'epl',                          # English Premier League abbreviation
+            # Golf
+            'pga', 'pga tour', 'masters', 'golf', 'augusta',
+            'ryder cup', 'open championship', 'us open golf',
+            # General sports orgs
+            'fifa', 'world cup', 'olympics',
+            # Motor racing
+            'formula 1', 'f1 ', 'nascar', 'motogp',
+            # Other sports
+            'wimbledon', 'ufc', 'boxing', 'wrestling',
+            'tennis', 'cycling', 'tour de france',
             # College sports
             'ncaa', 'college football', 'college basketball',
         ]
 
-        # Structural patterns (question text only)
-        sport_patterns = ['vs ', ' game ', ' match ', ' score', 'playoff', 'championship']
+        sport_patterns = [
+            'vs ', ' game ', ' match ', ' score',
+            'playoff', 'championship',
+            'tournament',               # catches golf/tennis/esports tournaments
+            'finish in the top',        # catches EPL top-4 finish markets
+            'top 4 of the',             # EPL-specific
+            'league table',
+            'title race',
+            'win the.*cup',
+        ]
 
-        # Check tags
         if any(kw in lbl for lbl in tag_labels for kw in sport_keywords):
             return True
-
-        # Check question text against both lists
         if any(kw in question for kw in sport_keywords):
             return True
         if any(p in question for p in sport_patterns):
@@ -164,10 +176,7 @@ class PolymarketFetcher:
             return None
 
     def fetch_all_markets_paginated(self, max_pages: int = None) -> List[Dict[str, Any]]:
-        """
-        Fetch ALL available markets using pagination.
-        Gamma API: max 100 per request, uses offset for pagination.
-        """
+        """Fetch ALL available markets using pagination (max 100/page, offset-based)."""
         max_pages = max_pages or config.MAX_PAGES
         all_markets = []
         offset = 0
@@ -214,8 +223,9 @@ class PolymarketFetcher:
 
     def get_active_markets(self, limit: int = 20, max_pages: int = None) -> List[Dict[str, Any]]:
         """
-        Fetch and filter active markets with pagination support.
-        No volume-based sorting – anomaly_detector ranks by relative score.
+        Fetch and filter active markets.
+        Filters: volume ≥ threshold, closes >6h, no sports/live events.
+        No volume sort – anomaly_detector ranks by relative score.
         """
         all_markets = self.fetch_all_markets_paginated(max_pages=max_pages)
 
@@ -243,9 +253,7 @@ class PolymarketFetcher:
     def get_market_snapshot(self, market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
         Build market snapshot with real baseline from createdAt + all-time volume.
-        Phase 5: Replaces placeholder baseline (volume_24hr * 0.8).
-
-        Baseline = all-time volume / market age in days → real daily average.
+        Baseline = all-time volume / age_days → real daily average.
         spike_ratio = volume_24hr / baseline → true relative spike indicator.
         """
         try:
@@ -259,9 +267,8 @@ class PolymarketFetcher:
             volume_24hr = float(market.get('volume_24hr', 0))
             volume_total = float(market.get('volume', volume_24hr))
 
-            # Real baseline: all-time volume / market age in days
             now = datetime.now(timezone.utc)
-            age_days = 30  # Conservative fallback
+            age_days = 30
             try:
                 created_str = (
                     market.get('createdAt') or
@@ -294,12 +301,10 @@ class PolymarketFetcher:
                 'end_date_iso': market.get('end_date_iso'),
                 'tags': market.get('tags', []),
                 'event_slug': market.get('event_slug', market.get('eventSlug')),
-                # Real baseline fields (Phase 5)
                 'baseline': round(avg_daily_baseline, 2),
                 'current_volume': volume_24hr,
                 'spike_ratio': round(spike_ratio, 3),
                 'age_days': age_days,
-                # Enriched by orchestrator (Phase 5)
                 'holders': [],
                 'volumes_history': [],
                 'price_delta_30m': 0.0,
@@ -344,7 +349,7 @@ def main():
 
     fetcher = PolymarketFetcher()
 
-    print("\n[Test 1] Paginated fetch (2 pages = up to 200 markets)...")
+    print("\n[Test 1] Paginated fetch (2 pages)...")
     markets = fetcher.get_active_markets(limit=None, max_pages=2)
 
     if not markets:
@@ -367,20 +372,23 @@ def main():
             f"{s.get('question', '')[:38]}"
         )
 
-    print(f"\n[Test 3] Sports filter check (should be 0 sports markets)...")
-    sport_check = ['nhl', 'nba', 'nfl', 'bundesliga', 'champions league',
-                   'stanley cup', 'playoff', 'championship']
+    print(f"\n[Test 3] Sports filter check...")
+    sport_check = [
+        'nhl', 'nba', 'nfl', 'bundesliga', 'champions league',
+        'stanley cup', 'playoff', 'championship', 'tournament',
+        'epl', 'masters', 'pga', 'golf', 'top 4'
+    ]
     leaked = [m for m in markets if any(kw in m.get('question', '').lower() for kw in sport_check)]
     if leaked:
-        print(f"❌ {len(leaked)} sports markets leaked through:")
-        for m in leaked:
-            print(f"   - {m['question'][:60]}")
+        print(f"❌ {len(leaked)} sports markets leaked:")
+        for m in leaked[:5]:
+            print(f"   - {m['question'][:65]}")
     else:
         print(f"✅ PASS: 0 sports markets in {len(markets)} results")
 
     print(f"\n[Test 4] Baseline sanity check...")
     for s in snapshots[:3]:
-        status = "✅" if s.get('baseline', 0) > 0 and s.get('spike_ratio', 1.0) != 1.0 else "⚠️ Placeholder!"
+        status = "✅" if s.get('baseline', 0) > 0 and s.get('spike_ratio', 1.0) != 1.0 else "⚠️"
         print(f"   {status} Age={s.get('age_days')}d | Baseline=${s.get('baseline', 0):,.0f} | Spike={s.get('spike_ratio', 0):.2f}x")
 
     print("\n" + "=" * 60)

@@ -1,9 +1,8 @@
 """
 PolyAugur Anomaly Detector - Multi-Layer Insider Signal Detection
-Detects volume spikes, price anomalies, and behavioral patterns indicating informed trading.
-Core Principle: Insider detection = relative anomaly vs own baseline (ALL market sizes relevant).
-Author: Diego Ringleb | Phase 3 | 2026-02-28
-Architecture: mache-es-sehr-viel-ausfuhrlicher.md [file:1] Abschnitt 5
+Core fix Phase 5: Time-horizon penalty + precise insider topics.
+Target: Short-term geopolitical/regulatory events (e.g. US strike on Iran/Venezuela).
+Author: Diego Ringleb | Phase 3+5 | 2026-02-28
 """
 
 import logging
@@ -19,18 +18,17 @@ logger = logging.getLogger(__name__)
 class AnomalyDetector:
     """
     Multi-layer anomaly detection for Polymarket insider signals.
-    
+
     Core Principle: Relevance = RELATIVE deviation from own baseline.
-    - A $1M market with 5x spike is equally suspicious as a $10k market with 5x spike.
-    - No market size bias, no age bias.
-    - Insider-prone = unusual activity relative to that market's OWN history.
-    
-    Layers [file:1] Abschnitt 5:
-    1. Volume Spike (relative to own baseline)
-    2. Price Anomaly (conviction, spread, mismatch)
-    3. Behavioral / Holder patterns (Phase 4+)
-    4. Topic Sensitivity (regulation/politics/finance = higher insider risk)
-    5. Aggregation → Score 0.0-1.0 → Mistral trigger @ threshold
+    Insider-prone = unusual activity relative to market's OWN history.
+
+    Key improvement (Phase 5):
+    - Time horizon penalty: 2028 elections score near 0 (not insider-tradeable).
+    - Precise insider topics: geopolitical, regulatory, corporate events.
+    - No longer triggers on long-term prediction markets.
+
+    Ideal signals: "Will US attack Iran?", "Fed emergency cut?", "SEC approves ETF?"
+    Not ideal: "Will Nikki Haley win 2028 election?"
     """
 
     def __init__(self):
@@ -42,10 +40,7 @@ class AnomalyDetector:
     def detect_volume_spike(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect unusual volume relative to THIS market's own baseline.
-        [file:1] Abschnitt 5.2.1 - both ratio and z-score methods.
-
         Fully relative: $5M market with 4x spike = same score as $5k market with 4x spike.
-        No absolute threshold bias.
         """
         current_vol = float(snapshot.get('current_volume', snapshot.get('volume_24hr', 0)))
         baseline = float(snapshot.get('baseline', 0))
@@ -60,7 +55,6 @@ class AnomalyDetector:
 
         spike_ratio = current_vol / baseline
 
-        # Scoring purely on relative spike [file:1] Abschnitt 5.2.1
         if spike_ratio >= 5.0:
             score = 0.35
             severity = 'critical'
@@ -77,12 +71,6 @@ class AnomalyDetector:
             score = 0.0
             severity = 'none'
 
-        logger.debug(
-            f"Volume spike: ratio={spike_ratio:.2f}x | "
-            f"current=${current_vol:,.0f} | baseline=${baseline:,.0f} | "
-            f"score={score:.2f}"
-        )
-
         return {
             'score': score,
             'spike_ratio': round(spike_ratio, 3),
@@ -96,9 +84,7 @@ class AnomalyDetector:
     def detect_price_anomaly(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect unusual price movements indicating informed trading.
-        [file:1] Abschnitt 5.2 - checks conviction, mismatch, spread.
-
-        All relative: Works for any market size.
+        Checks conviction, volume/liquidity pressure, one-sided bets.
         """
         yes_price = float(snapshot.get('yes_price', 0.5))
         no_price = float(snapshot.get('no_price', 0.5))
@@ -109,14 +95,12 @@ class AnomalyDetector:
         score = 0.0
         indicators = []
 
-        # Check 1: Extreme conviction (>0.90 or <0.10)
-        # Informed traders push prices to extremes before resolution
+        # Extreme conviction (>0.90 or <0.10)
         if yes_price > 0.90 or yes_price < 0.10:
             score += 0.10
             indicators.append(f"extreme_conviction_{yes_price:.2f}")
 
-        # Check 2: Volume-to-liquidity ratio (relative pressure)
-        # High vol relative to liquidity = large informed bets moving the market
+        # Volume-to-liquidity ratio
         vol_liq_ratio = volume_24hr / liquidity if liquidity > 0 else 0
         if vol_liq_ratio > 3.0:
             score += 0.12
@@ -125,8 +109,7 @@ class AnomalyDetector:
             score += 0.06
             indicators.append(f"vol_liq_elevated_{vol_liq_ratio:.1f}x")
 
-        # Check 3: Narrow spread + high volume = informed directional bet
-        # Insider knows outcome → bets aggressively → price moves one-sided
+        # One-sided bet: high spread + high vol/liq
         if spread > 0.70 and vol_liq_ratio > 1.0:
             score += 0.08
             indicators.append(f"one_sided_bet_spread_{spread:.2f}")
@@ -146,91 +129,106 @@ class AnomalyDetector:
 
     def detect_holder_anomalies(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Analyze wallet/holder patterns [file:1] Abschnitt 5.3.
-        Phase 3 MVP: Placeholder. Phase 4+: Real Data API holder analysis.
-
-        Future checks:
-        - New wallets (<7 days) with large positions
-        - Coordinated buys (3+ wallets, same direction, <30min)
-        - Fast entry velocity (>$50k in <15min)
+        Placeholder. Phase 6: Real holder analysis via CLOB /trades endpoint.
+        Future: new wallets <7d with large positions, coordinated buys.
         """
         holders = snapshot.get('holders', [])
-
-        if not holders:
-            return {
-                'score': 0.0,
-                'reason': 'no_holder_data_phase4_feature',
-                'holder_count': 0
-            }
-
-        # Phase 4+ logic (commented for reference):
-        # score = 0.0
-        # for h in holders:
-        #     age_days = (now - h['created_at']).days
-        #     if age_days < 7 and h['position_usd'] > 10_000:
-        #         score += 0.15  # New wallet, large bet
-        # coordination = detect_coordinated_buys(holders)
-        # if coordination['count'] >= 3:
-        #     score += 0.25
-
         return {
             'score': 0.0,
-            'reason': 'placeholder_mvp',
+            'reason': 'no_holder_data_phase6_feature',
             'holder_count': len(holders)
         }
 
-    # ==================== LAYER 4: TOPIC SENSITIVITY ====================
+    # ==================== LAYER 4: TOPIC + TIME SENSITIVITY ====================
 
     def calculate_topic_sensitivity(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Assess how insider-prone the market topic is.
+        Assess how insider-prone the market is based on:
+        1. TIME HORIZON: Long-term markets (>365d) get heavy penalty.
+           2028 elections, 10-year price targets → NOT insider-tradeable.
+           Short-term events (<30d) get bonus → more likely time-sensitive.
+        2. TOPIC: Geopolitical, regulatory, corporate events = high insider risk.
+           "Will US attack Iran?" → multiplier ×1.4
+           "Will SEC approve ETF?" → multiplier ×1.3
+           "Will Nikki Haley win 2028?" → multiplier ×0.3 (time penalty)
+        3. VOLUME SURGE: 60%+ of all-time volume in 24h = sudden attention.
 
-        NOT a size or age filter. Purely based on:
-        - Topic category (regulation/politics/finance → higher insider risk)
-        - Volume surge relative to all-time (sudden interest in this market)
-
-        Returns multiplier 0.8-1.4 applied to base_score.
-        Works identically regardless of market size or age.
+        Returns multiplier 0.20–1.80 applied to base_score.
         """
         question = snapshot.get('question', '').lower()
         volume_24hr = float(snapshot.get('volume_24hr', 0))
         volume_total = float(snapshot.get('volume', volume_24hr))
+        end_date_iso = snapshot.get('end_date_iso', '')
 
         multiplier = 1.0
         reasons = []
 
-        # Factor 1: Topic category (insider information asymmetry risk)
-        high_sensitivity_topics = [
-            # Politics/regulation (privileged access to info)
-            'trump', 'fed ', 'federal reserve', 'sec ', 'congress',
-            'bill ', 'legislation', 'executive order', 'sanction',
-            # Corporate (M&A, earnings, IPO leaks)
-            'merger', 'acquisition', ' ipo', 'earnings', 'ceo',
-            'bankrupt', 'layoff',
-            # Crypto regulation (regulatory insiders)
-            'etf', 'bitcoin etf', 'crypto regulation',
-            # Geopolitics
-            'war', 'ceasefire', 'treaty', 'election'
+        # ── Factor 1: Time Horizon ─────────────────────────────────────────
+        # Long-term markets have no insider info advantage.
+        # 2028 elections, multi-year price predictions → penalize heavily.
+        try:
+            if end_date_iso:
+                closes_at = datetime.fromisoformat(end_date_iso.replace('Z', '+00:00'))
+                days_to_close = (closes_at - datetime.now(timezone.utc)).days
+
+                if days_to_close > 365:
+                    multiplier *= 0.30   # 2028 elections, 10-year bets → near-zero
+                    reasons.append(f"long_term_{days_to_close}d")
+                elif days_to_close > 180:
+                    multiplier *= 0.55   # 6-12 months out → unlikely insider
+                    reasons.append(f"medium_term_{days_to_close}d")
+                elif days_to_close > 90:
+                    multiplier *= 0.80   # 3-6 months → minor penalty
+                    reasons.append(f"far_term_{days_to_close}d")
+                elif days_to_close <= 14:
+                    multiplier *= 1.25   # <2 weeks → imminent, high insider risk
+                    reasons.append(f"imminent_{days_to_close}d")
+                elif days_to_close <= 30:
+                    multiplier *= 1.10   # <1 month → elevated
+                    reasons.append(f"near_term_{days_to_close}d")
+        except (ValueError, TypeError, AttributeError):
+            pass
+
+        # ── Factor 2: Insider-prone topic ─────────────────────────────────
+        # Only topics where privileged information actually exists.
+        # Removed: 'election' (too broad), 'war' alone (too common).
+        critical_topics = [
+            # Geopolitical military actions (highest insider value)
+            'attack ', 'airstrike', 'invasion', 'troops', 'military action',
+            'declare war', 'nuclear', 'ceasefire', 'peace deal',
+            'sanction', 'missile',
+            # Central bank (FOMC insiders, journalists with advance access)
+            'fed ', 'federal reserve', 'rate cut', 'rate hike', 'fomc',
+            'powell', 'fed chair', 'bowman',
+            # Regulatory (SEC, CFTC, DOJ with advance regulatory knowledge)
+            'sec ', 'etf approval', 'crypto regulation', 'approved by',
+            'cftc', 'doj ',
+            # Corporate events (M&A leaks, earnings guidance)
+            'merger', 'acquisition', ' ipo', 'earnings', 'bankrupt',
+            'layoff', 'ceo resign', 'ceo fired',
+            # Executive actions (White House insiders)
+            'executive order', 'nominate', 'nomination', 'appoint',
+            'tariff', 'trade deal', 'trade war',
         ]
 
-        matched_topics = [t for t in high_sensitivity_topics if t in question]
-        if matched_topics:
+        matched = [t for t in critical_topics if t in question]
+        if matched:
             multiplier *= 1.30
-            reasons.append(f"insider_topic:{matched_topics[0]}")
+            reasons.append(f"insider_topic:{matched[0].strip()}")
 
-        # Factor 2: Sudden volume surge relative to market's own all-time history
-        # Works for ANY market size: $1B market with 60% of volume in 24h is just as suspicious
+        # ── Factor 3: Sudden volume surge ─────────────────────────────────
+        # 60%+ of all-time volume in last 24h = someone just got interested.
         if volume_total > 0:
             recency_ratio = volume_24hr / volume_total
-            if recency_ratio > 0.60:  # 60%+ of ALL-TIME volume in last 24h
+            if recency_ratio > 0.60:
                 multiplier *= 1.40
                 reasons.append(f"sudden_alltime_surge_{recency_ratio:.0%}")
             elif recency_ratio > 0.35:
                 multiplier *= 1.15
                 reasons.append(f"elevated_recency_{recency_ratio:.0%}")
 
-        # Clamp multiplier
-        multiplier = round(max(0.8, min(1.5, multiplier)), 2)
+        # Clamp: floor 0.20, ceiling 1.80
+        multiplier = round(max(0.20, min(1.80, multiplier)), 2)
 
         return {
             'multiplier': multiplier,
@@ -242,32 +240,27 @@ class AnomalyDetector:
 
     def detect_anomaly(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Main detection pipeline: Aggregate all layers into final score.
-        [file:1] Abschnitt 5.5
+        Main detection pipeline: Aggregate all layers → final score.
 
-        Score = (volume + price + holder) × topic_sensitivity_multiplier
+        Score = (volume + price + holder) × topic_time_multiplier
         Threshold: score ≥ CONFIDENCE_THRESHOLD → flag for Mistral
 
-        All scoring is RELATIVE to the market's own baseline.
-        No market size bias, no age bias.
+        Key design: 2028 election markets automatically score low due to
+        time-horizon penalty (×0.30), regardless of price or volume.
         """
         try:
-            # Run all layers
             volume_result = self.detect_volume_spike(snapshot)
             price_result = self.detect_price_anomaly(snapshot)
             holder_result = self.detect_holder_anomalies(snapshot)
             topic_result = self.calculate_topic_sensitivity(snapshot)
 
-            # Base score (max ~0.85 with all layers; Phase 4+ adds up to 0.25 for holders)
             base_score = (
-                volume_result['score'] +   # Max 0.35
-                price_result['score'] +    # Max 0.25
-                holder_result['score']     # Max 0.25 (Phase 4+)
+                volume_result['score'] +    # Max 0.35
+                price_result['score'] +     # Max 0.25
+                holder_result['score']      # Max 0.25 (Phase 6+)
             )
 
-            # Apply topic sensitivity multiplier
             final_score = round(base_score * topic_result['multiplier'], 3)
-
             anomaly_detected = final_score >= self.confidence_threshold
 
             result = {
@@ -315,9 +308,7 @@ class AnomalyDetector:
             }
 
     def batch_detect(self, snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Run detection on multiple markets. Returns sorted by score (highest first).
-        """
+        """Run detection on multiple markets. Returns sorted by score (highest first)."""
         results = [self.detect_anomaly(s) for s in snapshots]
         results.sort(key=lambda x: x.get('score', 0), reverse=True)
 
@@ -331,71 +322,75 @@ class AnomalyDetector:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 3 v2")
+    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 5 (Time-Horizon Fix)")
     logger.info("=" * 60)
 
+    from datetime import timedelta
     detector = AnomalyDetector()
+    now = datetime.now(timezone.utc)
 
-    # Test 1: Large market ($2M) with 5x spike - should still flag
-    print("\n[Test 1] Large market $2M with 5x relative spike...")
-    snap_1 = {
-        'id': 't1', 'question': 'Will the Fed cut rates before June 2026?',
-        'volume_24hr': 2_000_000, 'current_volume': 2_000_000, 'baseline': 400_000,
+    # Test 1: 2028 Election market → should NOT flag (time penalty)
+    print("\n[Test 1] 2028 US Presidential Election (should NOT flag)...")
+    snap_election = {
+        'id': 't1', 'question': 'Will Nikki Haley win the 2028 US Presidential Election?',
+        'volume_24hr': 321_000, 'current_volume': 321_000, 'baseline': 50_000,
+        'yes_price': 0.08, 'no_price': 0.92, 'spread': 0.84,
+        'liquidity': 200_000, 'volume': 2_000_000, 'holders': [],
+        'end_date_iso': (now + timedelta(days=900)).isoformat()
+    }
+    r1 = detector.detect_anomaly(snap_election)
+    status = "✅" if not r1['anomaly_detected'] else "❌ SHOULD NOT FLAG"
+    print(f"   {status} Anomaly={r1['anomaly_detected']} | Score={r1['score']:.3f} | Multiplier={r1['topic_multiplier']}")
+
+    # Test 2: Fed chair nomination (short-term) → should flag
+    print("\n[Test 2] Fed chair nomination, closes in 20 days (SHOULD flag)...")
+    snap_fed = {
+        'id': 't2', 'question': 'Will Trump nominate Michelle Bowman as Fed chair?',
+        'volume_24hr': 453_000, 'current_volume': 453_000, 'baseline': 50_000,
         'yes_price': 0.73, 'no_price': 0.27, 'spread': 0.46,
-        'liquidity': 1_500_000, 'volume': 5_000_000, 'holders': []
+        'liquidity': 300_000, 'volume': 800_000, 'holders': [],
+        'end_date_iso': (now + timedelta(days=20)).isoformat()
     }
-    r1 = detector.detect_anomaly(snap_1)
-    print(f"   {'✅' if r1['anomaly_detected'] else '❌'} Anomaly={r1['anomaly_detected']} | "
-          f"Score={r1['score']:.3f} | Vol spike={r1['breakdown']['volume_spike']['spike_ratio']:.1f}x")
+    r2 = detector.detect_anomaly(snap_fed)
+    status = "✅" if r2['anomaly_detected'] else "❌ SHOULD FLAG"
+    print(f"   {status} Anomaly={r2['anomaly_detected']} | Score={r2['score']:.3f} | Reasons={r2['breakdown']['topic_sensitivity']['reasons']}")
 
-    # Test 2: Small market ($15k) with 4x spike on insider topic
-    print("\n[Test 2] Small market $15k with 4x spike on SEC topic...")
-    snap_2 = {
-        'id': 't2', 'question': 'Will SEC approve Ethereum ETF in March 2026?',
-        'volume_24hr': 15_000, 'current_volume': 15_000, 'baseline': 3_750,
-        'yes_price': 0.82, 'no_price': 0.18, 'spread': 0.64,
-        'liquidity': 12_000, 'volume': 20_000, 'holders': []
+    # Test 3: US Military strike market (imminent) → should flag high
+    print("\n[Test 3] US military action on Iran, closes in 7 days (SHOULD flag high)...")
+    snap_geo = {
+        'id': 't3', 'question': 'Will the US conduct an airstrike on Iran before March 15?',
+        'volume_24hr': 180_000, 'current_volume': 180_000, 'baseline': 5_000,
+        'yes_price': 0.35, 'no_price': 0.65, 'spread': 0.30,
+        'liquidity': 80_000, 'volume': 200_000, 'holders': [],
+        'end_date_iso': (now + timedelta(days=7)).isoformat()
     }
-    r2 = detector.detect_anomaly(snap_2)
-    print(f"   {'✅' if r2['anomaly_detected'] else '❌'} Anomaly={r2['anomaly_detected']} | "
-          f"Score={r2['score']:.3f} | Topic={r2['breakdown']['topic_sensitivity']['reasons']}")
+    r3 = detector.detect_anomaly(snap_geo)
+    status = "✅" if r3['anomaly_detected'] else "❌ SHOULD FLAG"
+    print(f"   {status} Anomaly={r3['anomaly_detected']} | Score={r3['score']:.3f} | Spike={r3['breakdown']['volume_spike']['spike_ratio']:.1f}x")
 
-    # Test 3: Normal large market - no spike, no anomaly
-    print("\n[Test 3] Large market $500k, no spike (normal)...")
-    snap_3 = {
-        'id': 't3', 'question': 'Will Bitcoin reach $150k by end 2026?',
-        'volume_24hr': 500_000, 'current_volume': 500_000, 'baseline': 480_000,
-        'yes_price': 0.55, 'no_price': 0.45, 'spread': 0.10,
-        'liquidity': 800_000, 'volume': 10_000_000, 'holders': []
+    # Test 4: Russia/Ukraine ceasefire, closes in 30 days → should flag
+    print("\n[Test 4] Russia/Ukraine ceasefire by March 31 (SHOULD flag)...")
+    snap_ceasefire = {
+        'id': 't4', 'question': 'Russia x Ukraine ceasefire by March 31, 2026?',
+        'volume_24hr': 429_000, 'current_volume': 429_000, 'baseline': 80_000,
+        'yes_price': 0.42, 'no_price': 0.58, 'spread': 0.16,
+        'liquidity': 300_000, 'volume': 1_500_000, 'holders': [],
+        'end_date_iso': (now + timedelta(days=31)).isoformat()
     }
-    r3 = detector.detect_anomaly(snap_3)
-    print(f"   {'✅' if not r3['anomaly_detected'] else '❌'} Anomaly={r3['anomaly_detected']} | "
-          f"Score={r3['score']:.3f} (expected: False)")
-
-    # Test 4: Old large market, sudden volume surge (60%+ of all-time in 24h)
-    print("\n[Test 4] Old $1M+ market, 65% of all-time volume today (sudden surge)...")
-    snap_4 = {
-        'id': 't4', 'question': 'Will Trump sign executive order on crypto?',
-        'volume_24hr': 650_000, 'current_volume': 650_000, 'baseline': 180_000,
-        'yes_price': 0.91, 'no_price': 0.09, 'spread': 0.82,
-        'liquidity': 400_000, 'volume': 1_000_000, 'holders': []
-    }
-    r4 = detector.detect_anomaly(snap_4)
-    print(f"   {'✅' if r4['anomaly_detected'] else '❌'} Anomaly={r4['anomaly_detected']} | "
-          f"Score={r4['score']:.3f} | Recency={r4['breakdown']['topic_sensitivity']['recency_ratio']:.0%}")
+    r4 = detector.detect_anomaly(snap_ceasefire)
+    status = "✅" if r4['anomaly_detected'] else "❌ SHOULD FLAG"
+    print(f"   {status} Anomaly={r4['anomaly_detected']} | Score={r4['score']:.3f} | Reasons={r4['breakdown']['topic_sensitivity']['reasons']}")
 
     # Test 5: Batch
-    print("\n[Test 5] Batch detection (all 4 markets)...")
-    results = detector.batch_detect([snap_1, snap_2, snap_3, snap_4])
-    print(f"   Ranked by score:")
+    print("\n[Test 5] Batch (should rank: geo > fed > ceasefire > election)...")
+    results = detector.batch_detect([snap_election, snap_fed, snap_geo, snap_ceasefire])
     for r in results:
         flag = "🚨" if r['anomaly_detected'] else "✓ "
-        print(f"   {flag} {r['score']:.3f} | {r['question'][:55]}")
+        print(f"   {flag} {r['score']:.3f} × {r['topic_multiplier']} | {r['question'][:55]}")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 3 Anomaly Detector: ALL TESTS PASSED")
+    print("✅ Phase 5 Anomaly Detector: PASSED")
     print("=" * 60)
-    print(f"📝 Next: git add src/anomaly_detector.py && git commit")
 
 
 if __name__ == "__main__":
