@@ -6,15 +6,18 @@ __pycache__/
 venv/
 env/
 
-# Environment
+# Environment — NEVER commit API keys
 .env
 
 # Data
 data/
 *.db
 
+# Generated output
+exports/
+logs/
+
 # IDE
 .vscode/
 .idea/
 *.swp
-EOF

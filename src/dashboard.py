@@ -10,7 +10,7 @@ Usage:
     python -m src.dashboard --export html      # Export to HTML report
     python -m src.dashboard --performance      # Win/loss breakdown
 
-Author: Diego Ringleb | Phase 11 | 2026-02-28
+Author: Diego Ringleb | Phase 12.2 | 2026-03-01
 """
 
 import argparse
@@ -34,7 +34,6 @@ def _polymarket_url(signal: Dict[str, Any]) -> str:
     """
     question = signal.get('question', '')
     if question:
-        # Use first 80 chars to keep URL reasonable
         return f"https://polymarket.com/browse?_q={quote(question[:80])}"
     return "https://polymarket.com"
 
@@ -56,13 +55,12 @@ class Dashboard:
             print("\n   No signals found for the given filters.")
             return
 
-        print(f"\n{'='*95}")
-        print(f"  {'#':>3}  {'Whale':5}  {'Trade':8}  {'Conf':5}  {'Boost':5}  "
+        print(f"\n{'='*90}")
+        print(f"  {'#':>3}  {'Trade':8}  {'Conf':5}  {'Boost':5}  "
               f"{'Risk':6}  {'Score':5}  {'Outcome':8}  Question")
-        print(f"{'─'*95}")
+        print(f"{'─'*90}")
 
         for s in signals:
-            whale = "🐋" if s.get('trade_suspicious') else "  "
             conf = s.get('confidence', 0)
             boost = s.get('confidence_boost', 0)
             boost_str = f"+{boost:.0%}" if boost and boost > 0 else "    "
@@ -74,13 +72,13 @@ class Dashboard:
             outcome_str = outcome_map.get(outcome, outcome)
 
             print(
-                f"  {s.get('id', 0):>3}  {whale:5}  {s.get('trade', 'HOLD'):8}  "
+                f"  {s.get('id', 0):>3}  {s.get('trade', 'HOLD'):8}  "
                 f"{conf:.0%}   {boost_str:5}  {s.get('risk_level', '?'):6}  "
                 f"{s.get('anomaly_score', 0):.2f}   {outcome_str:8}  "
-                f"{s.get('question', '')[:40]}"
+                f"{s.get('question', '')[:45]}"
             )
 
-        print(f"{'='*95}")
+        print(f"{'='*90}")
         print(f"  Total: {len(signals)} signals")
 
     def print_performance(self):
@@ -156,9 +154,6 @@ class Dashboard:
             'confidence_boost', 'anomaly_score', 'anomaly_type', 'risk_level',
             'yes_price', 'volume_24hr', 'spike_ratio', 'days_to_close',
             'holding_hours', 'position_size_pct',
-            'whale_count', 'whale_volume_pct', 'top_wallet_pct',
-            'unique_wallets', 'directional_bias', 'dominant_side',
-            'burst_score', 'trade_suspicious', 'suspicious_reasons',
             'outcome', 'profit_loss_pct', 'reasoning',
         ]
 
@@ -196,12 +191,11 @@ class Dashboard:
         buy_no = sum(1 for s in signals if s.get('trade') == 'BUY_NO')
         hold = total_signals - buy_yes - buy_no
 
-        # Accurate percentages
         buy_yes_pct = (buy_yes / total_signals * 100) if total_signals > 0 else 0
         buy_no_pct = (buy_no / total_signals * 100) if total_signals > 0 else 0
         hold_pct = (hold / total_signals * 100) if total_signals > 0 else 0
 
-        # ── Distribution segments (only render non-zero) ─────────────
+        # ── Distribution segments ────────────────────────────────────
         dist_segments = ""
         if buy_yes > 0:
             dist_segments += (
@@ -227,7 +221,6 @@ class Dashboard:
         # ── Signal rows ──────────────────────────────────────────────
         rows_html = ""
         for s in signals:
-            whale = "🐋" if s.get('trade_suspicious') else ""
             trade = s.get('trade', 'HOLD')
             conf = s.get('confidence', 0)
             boost = s.get('confidence_boost', 0)
@@ -273,22 +266,22 @@ class Dashboard:
                 else "#64748b"
             )
 
-            # Entry price display
+            # Entry price
             yes_price = s.get('yes_price', 0)
             entry_str = f"${yes_price:.2f}" if yes_price else "—"
 
-            # Whale row highlight
-            row_class = "row-whale" if s.get('trade_suspicious') else ""
+            # Anomaly type label
+            anomaly_type = s.get('anomaly_type', 'mixed')
 
             rows_html += f"""
-            <tr class="{row_class}">
+            <tr>
                 <td class="td-id">{s.get('id', '')}</td>
                 <td class="td-time">{s.get('detected_at', '')[:16]}</td>
                 <td class="td-market">
-                    <div class="market-name">{whale} {s.get('question', '')[:65]}</div>
+                    <div class="market-name">{s.get('question', '')[:65]}</div>
                     <div class="market-meta">
                         Spike {s.get('spike_ratio', 0):.1f}x · Vol ${s.get('volume_24hr', 0):,.0f} ·
-                        Entry {entry_str} · {s.get('anomaly_type', 'mixed')}
+                        Entry {entry_str} · {anomaly_type}
                     </div>
                 </td>
                 <td>{trade_badge}</td>
@@ -299,11 +292,6 @@ class Dashboard:
                     </div>
                 </td>
                 <td class="td-risk">{s.get('risk_level', '—')}</td>
-                <td class="td-whale-data">
-                    <span title="Whale trades">{s.get('whale_count', 0)}</span> ·
-                    <span title="Top wallet %">{s.get('top_wallet_pct', 0):.0%}</span> ·
-                    <span title="Burst score">{s.get('burst_score', 1.0):.1f}x</span>
-                </td>
                 <td>{outcome_badge}</td>
                 <td style="color:{pnl_color};font-weight:600;font-family:'JetBrains Mono',monospace;font-size:0.8rem">{pnl:+.1%}</td>
                 <td class="td-action">
@@ -364,14 +352,13 @@ class Dashboard:
         }}
 
         .container {{
-            max-width: 1480px;
+            max-width: 1400px;
             margin: 0 auto;
             padding: 2rem;
             position: relative;
             z-index: 1;
         }}
 
-        /* ── Header ───────────────────────────────────── */
         .header {{
             text-align: center;
             margin-bottom: 2.5rem;
@@ -418,7 +405,6 @@ class Dashboard:
             50% {{ opacity: 0.8; box-shadow: 0 0 0 6px rgba(34,197,94,0); }}
         }}
 
-        /* ── Stats Grid ───────────────────────────────── */
         .stats-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -482,7 +468,6 @@ class Dashboard:
         .stat-purple .stat-value {{ color: var(--accent-purple); }}
         .stat-yellow .stat-value {{ color: var(--accent-yellow); }}
 
-        /* ── Distribution Bar ─────────────────────────── */
         .dist-section {{
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -548,7 +533,6 @@ class Dashboard:
             vertical-align: middle;
         }}
 
-        /* ── Table ────────────────────────────────────── */
         .table-wrapper {{
             background: var(--bg-card);
             border: 1px solid var(--border);
@@ -602,12 +586,6 @@ class Dashboard:
         tbody tr {{ transition: background 0.15s; }}
         tbody tr:hover {{ background: var(--bg-card-hover); }}
 
-        tbody tr.row-whale {{
-            background: rgba(234, 179, 8, 0.04);
-            border-left: 3px solid var(--accent-yellow);
-        }}
-        tbody tr.row-whale:hover {{ background: rgba(234, 179, 8, 0.08); }}
-
         .td-id {{
             font-family: 'JetBrains Mono', monospace;
             color: var(--text-muted);
@@ -621,7 +599,7 @@ class Dashboard:
             white-space: nowrap;
         }}
 
-        .td-market {{ max-width: 320px; }}
+        .td-market {{ max-width: 360px; }}
 
         .market-name {{
             font-weight: 500;
@@ -637,7 +615,6 @@ class Dashboard:
             font-family: 'JetBrains Mono', monospace;
         }}
 
-        /* ── Badges ───────────────────────────────────── */
         .badge {{
             display: inline-block;
             padding: 0.2rem 0.6rem;
@@ -673,7 +650,6 @@ class Dashboard:
             border: 1px solid rgba(100, 116, 139, 0.3);
         }}
 
-        /* ── Confidence Bar ───────────────────────────── */
         .td-conf {{ min-width: 100px; }}
 
         .conf-wrapper {{
@@ -716,14 +692,6 @@ class Dashboard:
             color: var(--text-secondary);
         }}
 
-        .td-whale-data {{
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 0.75rem;
-            color: var(--text-secondary);
-            white-space: nowrap;
-        }}
-
-        /* ── Trade Button ─────────────────────────────── */
         .td-action {{ text-align: center; }}
 
         .btn-market {{
@@ -750,11 +718,6 @@ class Dashboard:
             filter: brightness(1.15);
         }}
 
-        .btn-market:active {{
-            transform: translateY(0);
-        }}
-
-        /* ── Footer ───────────────────────────────────── */
         .footer {{
             text-align: center;
             margin-top: 2.5rem;
@@ -770,7 +733,6 @@ class Dashboard:
         }}
         .footer a:hover {{ text-decoration: underline; }}
 
-        /* ── Responsive ───────────────────────────────── */
         @media (max-width: 1024px) {{
             .container {{ padding: 1rem; }}
             .stats-grid {{ grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; }}
@@ -788,18 +750,16 @@ class Dashboard:
 <body>
     <div class="container">
 
-        <!-- Header -->
         <div class="header">
             <div class="header-logo">🔮 PolyAugur</div>
             <div class="header-sub">Polymarket Insider Signal Intelligence</div>
             <div class="header-meta">
                 <span class="live-dot"></span>
                 Generated {datetime.now().strftime('%Y-%m-%d %H:%M UTC')} ·
-                Scanning 10,000+ markets · Phase 11
+                Scanning 10,000+ markets · Multi-layer anomaly detection
             </div>
         </div>
 
-        <!-- Stats Grid -->
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-icon">📡</div>
@@ -843,7 +803,6 @@ class Dashboard:
             </div>
         </div>
 
-        <!-- Trade Distribution -->
         <div class="dist-section">
             <div class="dist-title">Signal Distribution</div>
             <div class="dist-bar">{dist_segments}</div>
@@ -854,7 +813,6 @@ class Dashboard:
             </div>
         </div>
 
-        <!-- Signals Table -->
         <div class="table-wrapper">
             <div class="table-header">
                 <div class="table-title">🚨 Detected Signals</div>
@@ -870,7 +828,6 @@ class Dashboard:
                             <th>Trade</th>
                             <th>Confidence</th>
                             <th>Risk</th>
-                            <th>Whales · Wallet · Burst</th>
                             <th>Outcome</th>
                             <th>P&L</th>
                             <th>Action</th>
@@ -881,7 +838,6 @@ class Dashboard:
             </div>
         </div>
 
-        <!-- Footer -->
         <div class="footer">
             PolyAugur v1.0 · Built by Diego Ringleb ·
             <a href="https://github.com/Diego-2510/PolyAugur">github.com/Diego-2510/PolyAugur</a>
