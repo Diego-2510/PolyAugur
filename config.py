@@ -1,6 +1,6 @@
 """
 PolyAugur Configuration
-Author: Diego Ringleb | Phase 7 | 2026-02-28
+Author: Diego Ringleb | Phase 10 | 2026-02-28
 """
 
 import os
@@ -18,15 +18,12 @@ MISTRAL_MODEL   = "mistral-large-latest"
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
 # ── Telegram ─────────────────────────────────────────────────────────────
-# Get token:   @BotFather → /newbot
-# Get chat_id: send a message to your bot, then
-#              GET https://api.telegram.org/bot{TOKEN}/getUpdates
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Detection Thresholds ─────────────────────────────────────────────────
-CONFIDENCE_THRESHOLD      = 0.45   # AnomalyDetector pre-screen
-MISTRAL_THRESHOLD         = 0.45   # Min score to send to Mistral
+CONFIDENCE_THRESHOLD      = 0.45
+MISTRAL_THRESHOLD         = 0.45
 MAX_POSITION_SIZE_PCT     = 0.10
 
 # ── Polling ──────────────────────────────────────────────────────────────
@@ -47,9 +44,13 @@ MIN_VOLUME_24H              = 10_000
 MAX_MISTRAL_CALLS_PER_CYCLE = 10
 MISTRAL_BATCH_SIZE          = 3
 
-# ── Trade Analysis (Phase 7) ─────────────────────────────────────────────
+# ── Trade Analysis ───────────────────────────────────────────────────────
 TRADE_ANALYSIS_ENABLED       = True
-MAX_TRADE_ANALYSIS_PER_CYCLE = 15   # Max CLOB API calls per cycle
+MAX_TRADE_ANALYSIS_PER_CYCLE = 15
 
 # ── Signal Store ─────────────────────────────────────────────────────────
 SIGNAL_DB_PATH = os.getenv("SIGNAL_DB_PATH", "data/signals.db")
+
+# ── Health Monitoring (Phase 10) ─────────────────────────────────────────
+HEALTH_PING_EVERY_N_CYCLES = 100   # ~50 min at 30s interval
+MAX_CONSECUTIVE_ERRORS     = 5     # Alert threshold

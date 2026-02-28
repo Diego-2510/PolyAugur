@@ -1,0 +1,23 @@
+[Unit]
+Description=PolyAugur - Polymarket Insider Signal Detection
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=diego
+WorkingDirectory=/home/diego/Projekte/PolyAugur
+EnvironmentFile=/home/diego/Projekte/PolyAugur/.env
+ExecStart=/home/diego/Projekte/PolyAugur/.venv/bin/python run.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/diego/Projekte/PolyAugur/data /home/diego/Projekte/PolyAugur/logs /home/diego/Projekte/PolyAugur/exports
+
+[Install]
+WantedBy=multi-user.target
