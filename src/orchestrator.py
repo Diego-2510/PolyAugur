@@ -1,16 +1,27 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
 Coordinates: data_fetcher → anomaly_detector → mistral_analyzer → output
-Includes: real baseline, holder data (Data API), price velocity tracking.
+
+Pipeline per cycle:
+1. Fetch all active markets (paginated, sports filtered)
+2. Build snapshots with real baseline
+3. Price velocity enrichment (cross-cycle delta)
+4. AnomalyDetector.batch_detect() → all markets, free, no API calls
+5. Filter: score >= MISTRAL_THRESHOLD
+6. MistralAnalyzer.analyze_batch() → flagged markets only
+7. Log + store signals
+
+Note: Holder enrichment (Data API /positions) disabled permanently.
+      Data API requires ?user=<wallet> – market-level lookup unsupported.
+      Phase 6: CLOB /trades endpoint for wallet activity analysis.
+
 Author: Diego Ringleb | Phase 5 | 2026-02-28
-Architecture: mache-es-sehr-viel-ausfuhrlicher.md [file:1] Abschnitt 7
 """
 
 import time
 import logging
-import json
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 import config
 from src.data_fetcher import PolymarketFetcher
 from src.anomaly_detector import AnomalyDetector
@@ -26,16 +37,7 @@ logger = logging.getLogger(__name__)
 class Orchestrator:
     """
     Main polling loop connecting all PolyAugur modules.
-
-    Pipeline per cycle (every POLL_INTERVAL_SEC seconds) [file:1] Abschnitt 7:
-    1. Fetch all active markets (paginated)
-    2. Build snapshots with real baseline
-    3. Enrich snapshots with holder data (Data API)
-    4. AnomalyDetector.batch_detect() → all markets, free
-    5. Filter: score >= MISTRAL_THRESHOLD
-    6. MistralAnalyzer.analyze_batch() → flagged markets only
-    7. Log + store signals
-    8. Track price velocity (snapshot history for next cycle)
+    No holder enrichment (Data API is user-scoped, not market-scoped).
     """
 
     def __init__(self):
@@ -43,80 +45,26 @@ class Orchestrator:
         self.detector = AnomalyDetector()
         self.analyzer = MistralAnalyzer()
 
-        # Price velocity tracking: market_id → last snapshot
+        # Price velocity tracking: market_id → last snapshot data
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
 
-        # Signal log (in-memory, Phase 6: persist to DB)
+        # Signal log (in-memory; Phase 6: persist to SQLite/Postgres)
         self.signals: List[Dict[str, Any]] = []
 
         self.cycle_count = 0
         logger.info("🚀 Orchestrator initialized")
 
-    # ==================== DATA ENRICHMENT ====================
-
-    def enrich_with_holders(self, snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Fetch holder positions from Data API for all snapshots.
-        [file:1] Abschnitt 4.2 - Data API /positions endpoint
-
-        Adds: holders list with wallet, size, entry_time to each snapshot.
-        Respects DATA_API_RATE_LIMIT (15 req/10s).
-        """
-        enriched = []
-        request_count = 0
-
-        for snapshot in snapshots:
-            condition_id = snapshot.get('condition_id')
-            if not condition_id:
-                enriched.append(snapshot)
-                continue
-
-            # Rate limit: 15 req per 10s → 0.67s between requests
-            if request_count > 0 and request_count % config.DATA_API_RATE_LIMIT == 0:
-                logger.debug("Rate limit pause (Data API)")
-                time.sleep(10)
-
-            holders_data = self.fetcher._api_get(
-                config.DATA_API_BASE,
-                "positions",
-                {
-                    "market": condition_id,
-                    "limit": "50",
-                    "sortBy": "size",
-                    "sortOrder": "DESC"
-                }
-            )
-
-            request_count += 1
-
-            if holders_data and isinstance(holders_data, list):
-                snapshot['holders'] = [
-                    {
-                        'wallet': h.get('proxyWallet', h.get('user', '')),
-                        'size': float(h.get('size', 0)),
-                        'outcome': h.get('outcome', ''),
-                        'entry_price': float(h.get('avgPrice', 0)),
-                    }
-                    for h in holders_data[:20]  # Top 20 holders
-                ]
-                logger.debug(
-                    f"👥 {len(snapshot['holders'])} holders for "
-                    f"{snapshot.get('question', '')[:40]}"
-                )
-            else:
-                snapshot['holders'] = []
-
-            enriched.append(snapshot)
-            time.sleep(0.7)  # Respectful rate limiting
-
-        return enriched
+    # ==================== ENRICHMENT ====================
 
     def enrich_with_price_velocity(self, snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        Add price velocity by comparing to previous cycle's snapshot.
-        Detects rapid price moves before public news.
+        Compute price velocity by diffing against previous cycle snapshot.
+        Detects rapid price moves that often precede public news.
 
-        Adds: price_delta_30m, price_velocity (change per hour)
+        Adds to each snapshot:
+        - price_delta_30m  : YES price change since last cycle
+        - volume_delta_30m : volume change since last cycle
+        - price_velocity   : extrapolated change per hour (delta × 2)
         """
         now = datetime.now(timezone.utc)
 
@@ -129,14 +77,12 @@ class Orchestrator:
                 vol_delta = snapshot['volume_24hr'] - prev.get('volume_24hr', 0)
                 snapshot['price_delta_30m'] = round(price_delta, 4)
                 snapshot['volume_delta_30m'] = round(vol_delta, 0)
-                # Annualized velocity: change per hour
-                snapshot['price_velocity'] = round(price_delta * 2, 4)  # 30m → 1h
+                snapshot['price_velocity'] = round(price_delta * 2, 4)
             else:
                 snapshot['price_delta_30m'] = 0.0
                 snapshot['volume_delta_30m'] = 0.0
                 snapshot['price_velocity'] = 0.0
 
-            # Store for next cycle
             self.snapshot_history[market_id] = {
                 'yes_price': snapshot['yes_price'],
                 'volume_24hr': snapshot['volume_24hr'],
@@ -150,72 +96,63 @@ class Orchestrator:
     def run_cycle(self) -> Dict[str, Any]:
         """
         Execute one full detection cycle.
-
-        Returns:
-            Cycle summary dict with markets_analyzed, anomalies, signals, timing
+        Returns cycle summary dict.
         """
         cycle_start = time.time()
         self.cycle_count += 1
         logger.info(f"{'='*50}")
         logger.info(f"🔄 Cycle #{self.cycle_count} started")
 
-        # Reset Mistral call counter
         self.analyzer.reset_cycle_counters()
 
-        # Step 1: Fetch markets (paginated)
+        # ── Step 1: Fetch markets ────────────────────────────────────────
         logger.info("📡 Step 1: Fetching markets...")
         markets = self.fetcher.get_active_markets(limit=None, max_pages=config.MAX_PAGES)
 
         if not markets:
             logger.warning("No markets fetched – skipping cycle")
-            return {'cycle': self.cycle_count, 'markets': 0, 'anomalies': 0, 'signals': []}
-
+            return {
+                'cycle': self.cycle_count, 'markets': 0,
+                'anomalies': 0, 'signals': [], 'signal_count': 0
+            }
         logger.info(f"✅ {len(markets)} markets fetched")
 
-        # Step 2: Build snapshots with real baseline
+        # ── Step 2: Build snapshots ──────────────────────────────────────
         logger.info("📸 Step 2: Building snapshots...")
         snapshots = self.fetcher.get_snapshots_batch(markets)
         logger.info(f"✅ {len(snapshots)} snapshots built")
 
-        # Step 3: Price velocity (compare to previous cycle)
+        # ── Step 3: Price velocity ───────────────────────────────────────
         logger.info("📈 Step 3: Price velocity enrichment...")
         snapshots = self.enrich_with_price_velocity(snapshots)
 
-        # Step 4: Holder enrichment (Data API) – only for top anomaly candidates
-        # Pre-filter by basic heuristics to avoid 1000 Data API calls per cycle
-        logger.info("👥 Step 4: Holder enrichment (pre-filtered)...")
-        pre_candidates = [
-            s for s in snapshots
-            if s.get('spike_ratio', 1.0) >= 1.5 or abs(s.get('price_delta_30m', 0)) > 0.03
-        ]
-        logger.info(f"   Pre-candidates for holder enrichment: {len(pre_candidates)}")
-
-        if pre_candidates:
-            pre_candidates = self.enrich_with_holders(pre_candidates)
-            # Merge back
-            enriched_ids = {s['id'] for s in pre_candidates}
-            snapshots = pre_candidates + [s for s in snapshots if s['id'] not in enriched_ids]
-
-        # Step 5: Anomaly detection (all markets, free)
-        logger.info(f"🔍 Step 5: Anomaly detection on {len(snapshots)} markets...")
+        # ── Step 4: Anomaly detection (all markets, no API calls) ────────
+        logger.info(f"🔍 Step 4: Anomaly detection on {len(snapshots)} markets...")
         anomaly_results = self.detector.batch_detect(snapshots)
 
-        # Build lookup: market_id → (snapshot, anomaly_result)
         snapshot_map = {s['id']: s for s in snapshots}
 
-        # Step 6: Filter for Mistral (score >= threshold)
+        # ── Step 5: Filter for Mistral ───────────────────────────────────
         flagged = [
             r for r in anomaly_results
             if r.get('score', 0) >= config.MISTRAL_THRESHOLD
         ]
-        flagged = flagged[:config.MAX_MISTRAL_CALLS_PER_CYCLE * config.MISTRAL_BATCH_SIZE]
-        logger.info(f"🚨 {len(flagged)} markets flagged for Mistral (score ≥ {config.MISTRAL_THRESHOLD})")
+        # Cap to budget: max_calls × batch_size markets
+        max_markets = config.MAX_MISTRAL_CALLS_PER_CYCLE * config.MISTRAL_BATCH_SIZE
+        flagged = flagged[:max_markets]
+        logger.info(
+            f"🚨 {len(flagged)} markets flagged for Mistral "
+            f"(score ≥ {config.MISTRAL_THRESHOLD})"
+        )
 
-        # Step 7: Mistral analysis (batched)
+        # ── Step 6: Mistral validation ───────────────────────────────────
         signals = []
         if flagged:
-            logger.info(f"🧠 Step 7: Mistral analysis ({len(flagged)} markets, "
-                       f"~{-(-len(flagged)//config.MISTRAL_BATCH_SIZE)} API calls)...")
+            n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)  # ceil div
+            logger.info(
+                f"🧠 Step 6: Mistral analysis "
+                f"({len(flagged)} markets, ~{n_calls} API calls)..."
+            )
 
             mistral_items = [
                 (snapshot_map[r['market_id']], r)
@@ -224,9 +161,9 @@ class Orchestrator:
             ]
             mistral_results = self.analyzer.analyze_batch(mistral_items)
 
-            # Collect actionable signals
             for result in mistral_results:
-                if result.get('anomaly_detected') and result.get('confidence_score', 0) >= 0.65:
+                if (result.get('anomaly_detected')
+                        and result.get('confidence_score', 0) >= 0.65):
                     signal = {
                         **result,
                         'cycle': self.cycle_count,
@@ -265,9 +202,7 @@ class Orchestrator:
         return summary
 
     def run(self, max_cycles: int = None):
-        """
-        Main polling loop. Runs indefinitely (or max_cycles for testing).
-        """
+        """Main polling loop. Runs indefinitely or until max_cycles reached."""
         logger.info(f"🚀 PolyAugur started | Poll interval: {config.POLL_INTERVAL_SEC}s")
 
         cycle = 0
@@ -288,20 +223,17 @@ class Orchestrator:
                 break
             except Exception as e:
                 logger.error(f"Cycle error: {e}", exc_info=True)
-                time.sleep(5)  # Brief pause before retry
+                time.sleep(5)
 
 
 def main():
-    """Standalone test: 1 cycle."""
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 5")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 5 (Clean)")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (max_pages=1 for speed)...")
-    # Patch to limit pages during test
-    orch.fetcher.get_active_markets_orig = orch.fetcher.get_active_markets
+    print("\n[Test 1] Single cycle...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
@@ -316,18 +248,17 @@ def main():
         print(f"\n🚨 Signals this cycle:")
         for s in summary['signals']:
             print(f"   • {s.get('question', '')[:60]}")
-            print(f"     Trade: {s.get('recommended_trade')} | "
-                  f"Conf: {s.get('confidence_score', 0):.2f} | "
-                  f"Risk: {s.get('risk_level')}")
+            print(
+                f"     Trade: {s.get('recommended_trade')} | "
+                f"Conf: {s.get('confidence_score', 0):.2f} | "
+                f"Risk: {s.get('risk_level')}"
+            )
     else:
         print(f"\n   No high-confidence signals this cycle (normal)")
 
     print("\n" + "=" * 60)
     print("✅ Phase 5 Orchestrator: PASSED")
     print("=" * 60)
-    print("\n📝 Next:")
-    print("   git add src/orchestrator.py src/data_fetcher.py app.py")
-    print("   git commit -m 'feat(orchestrator): Phase 5 complete - polling loop, real baseline, holder enrichment'")
 
 
 if __name__ == "__main__":
