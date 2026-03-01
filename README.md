@@ -36,6 +36,12 @@ Gamma API (10,000+ markets)
               SQLite  ·  Telegram  ·  HTML Dashboard
 ```
 
+## Dashboard Preview
+
+<p align="center">
+  <img src="docs/dashboard.png" alt="PolyAugur Dashboard" width="900">
+</p>
+
 ## Pipeline (9-Step Cycle)
 
 | Step | Component | Description |
