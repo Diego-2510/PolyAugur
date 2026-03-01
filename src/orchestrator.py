@@ -264,7 +264,7 @@ class Orchestrator:
 
             for result in mistral_results:
                 if (result.get('anomaly_detected')
-                        and result.get('confidence_score', 0) >= 0.60):
+                        and result.get('confidence_score', 0) >= 0.65):
                     confirmed.append(result)
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")

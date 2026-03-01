@@ -15,15 +15,15 @@ Gamma API (10,000+ markets)
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 1 — Statistical Pre-Filter (free, all markets)          │
 │  Volume spikes · Price conviction · Topic sensitivity · Time   │
-│  → score ≥ 0.40 passed to LLM                                 │
+│  → score ≥ 0.55 passed to LLM                                 │
 └────────────────────────┬────────────────────────────────────────┘
-                         │  ~10–15 flagged markets
+                         │  ~5–8 flagged markets
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)          │
-│  Structured JSON reasoning · Confidence ≥ 0.60 confirmed       │
+│  Structured JSON reasoning · Confidence ≥ 0.65 confirmed       │
 └────────────────────────┬────────────────────────────────────────┘
-                         │  ~3–8 confirmed signals
+                         │  ~2–5 confirmed signals
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 3 — CLOB On-Chain Analysis + Wallet Profiling           │
@@ -50,7 +50,7 @@ Gamma API (10,000+ markets)
 | 2 | `data_fetcher.py` | Build market snapshots with real baseline volumes |
 | 3 | `orchestrator.py` | Price velocity enrichment (cross-cycle delta tracking) |
 | 4 | `anomaly_detector.py` | Multi-layer anomaly scoring (volume spike, price conviction, two-tier topic sensitivity) |
-| 5 | `orchestrator.py` | Filter markets with score ≥ 0.40 for LLM analysis |
+| 5 | `orchestrator.py` | Filter markets with score ≥ 0.55 for LLM analysis |
 | 6 | `mistral_analyzer.py` | Mistral LLM validation (batched 4/prompt, JSON-mode, whale context) |
 | 7 | `trade_analyzer.py` | CLOB on-chain trade analysis (whale detection, wallet concentration, burst timing) |
 | 8 | `orchestrator.py` | Whale confidence boost → deduplicate → store → Telegram notify |
@@ -81,10 +81,11 @@ PolyAugur distinguishes between markets where insider knowledge is **definitely 
 
 ### Other Detection Layers
 
-- **Volume Spikes**: 2x–50x baseline volume surges (1.5x scores minimally)
+- **Volume Spikes**: 2x–50x baseline volume surges (minimum 2x required for scoring)
 - **Price Conviction**: Extreme YES/NO prices with high volume-to-liquidity pressure
 - **Time Horizon Filter**: Markets >365 days penalized (no insider advantage on long-term speculation)
 - **Sudden Volume Surge**: 24h volume >60% of all-time volume → highly suspicious
+- **Minimum Volume**: Markets below $15,000 24h volume are excluded (noise filter)
 - **Whale Detection**: Trades >$5k, wallet concentration >40%, directional bias >85%
 - **Timing Bursts**: Last-hour volume vs historical hourly average (3x+ = suspicious)
 
@@ -160,17 +161,17 @@ Setup: Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID, 
 | Resource | Per Cycle | Per Day (24h @ 30s) |
 |----------|-----------|---------------------|
 | Gamma API | ~10 calls | ~2,880 calls (free) |
-| Mistral API | 3–12 calls | ~860–3,400 calls |
-| CLOB API | 0–15 calls | ~0–4,320 calls (free) |
-| **Estimated cost** | ~$0.01 | **~$3–8/day** |
+| Mistral API | 2–8 calls | ~580–2,300 calls |
+| CLOB API | 0–10 calls | ~0–2,880 calls (free) |
+| **Estimated cost** | ~$0.005 | **~$2–5/day** |
 
 ## Signal Flow Example
 
 ```
-1. Gamma API returns 1,200 active markets (volume ≥ $8,000)
-2. Anomaly Detector scores all 1,200 → 12 flagged (score ≥ 0.40)
-3. Mistral validates 12 in 3 batched calls → 5 confirmed (confidence ≥ 0.60)
-4. CLOB analyzes 5 confirmed → 1 has whale activity (3 whales, 89% directional BUY)
+1. Gamma API returns 800 active markets (volume ≥ $15,000)
+2. Anomaly Detector scores all 800 → 6 flagged (score ≥ 0.55)
+3. Mistral validates 6 in 2 batched calls → 3 confirmed (confidence ≥ 0.65)
+4. CLOB analyzes 3 confirmed → 1 has whale activity (3 whales, 89% directional BUY)
 5. Wallet Profiler: 2/3 whales classified as INSIDER (win rate >65%)
 6. Whale boost: confidence 0.72 → 0.82 (+0.10)
 7. Signal saved to SQLite, pushed to Telegram
@@ -208,10 +209,10 @@ PolyAugur/
 
 ## Key Design Decisions
 
-- **Two-tier detection**: Free statistical pre-screening on all markets, costly LLM only on flagged candidates → ~95% cost reduction vs. analyzing every market with LLM
+- **Elite filtering**: Pre-filter threshold at 0.55 ensures only markets with topic relevance OR extreme anomalies reach the LLM — generic volume spikes alone are not enough
 - **Two-tier topic system**: Critical insider topics (×1.40) vs. elevated (×1.15) vs. no boost — prevents false positives from generic crypto/weather/entertainment markets
 - **Wallet profiling**: Not all whales are equal — classifying traders by historical performance avoids boosting signals driven by known gamblers
-- **Batched Mistral calls**: 4 markets per prompt → fewer API calls, structured JSON output
+- **Batched Mistral calls**: 4 markets per prompt, max 8 calls per cycle → fewer API calls, structured JSON output
 - **Time horizon filter**: Markets >365 days automatically penalized (insider info decays over time)
 - **Whale confidence boost**: On-chain evidence increases confidence by up to +15%, never decreases it
 - **Deduplication**: 4-hour window prevents repeat signals for the same market

@@ -66,11 +66,8 @@ class AnomalyDetector:
             score = 0.25
             severity = 'high'
         elif spike_ratio >= 2.0:
-            score = 0.15
+            score = 0.10
             severity = 'moderate'
-        elif spike_ratio >= 1.5:
-            score = 0.05
-            severity = 'low'
         else:
             score = 0.0
             severity = 'none'
