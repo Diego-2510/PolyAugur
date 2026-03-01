@@ -38,6 +38,16 @@ def _polymarket_url(signal: Dict[str, Any]) -> str:
     return "https://polymarket.com"
 
 
+def _fmt_vol(vol: float) -> str:
+    """Format volume for display — abbreviated for large numbers."""
+    if vol >= 1_000_000:
+        return f"${vol / 1_000_000:.1f}M"
+    elif vol >= 1_000:
+        return f"${vol / 1_000:.0f}K"
+    else:
+        return f"${vol:,.0f}"
+
+
 class Dashboard:
     """Query and visualize signal history from SQLite."""
 
@@ -218,6 +228,9 @@ class Dashboard:
                 '<span class="dist-count">—</span></div>'
             )
 
+        # ── Volume display (abbreviated) ─────────────────────────────
+        vol_display = _fmt_vol(total_volume)
+
         # ── Signal rows ──────────────────────────────────────────────
         rows_html = ""
         for s in signals:
@@ -270,6 +283,9 @@ class Dashboard:
             yes_price = s.get('yes_price', 0)
             entry_str = f"${yes_price:.2f}" if yes_price else "—"
 
+            # Row volume (abbreviated)
+            row_vol = _fmt_vol(s.get('volume_24hr', 0))
+
             # Anomaly type label
             anomaly_type = s.get('anomaly_type', 'mixed')
 
@@ -280,7 +296,7 @@ class Dashboard:
                 <td class="td-market">
                     <div class="market-name">{s.get('question', '')[:65]}</div>
                     <div class="market-meta">
-                        Spike {s.get('spike_ratio', 0):.1f}x · Vol ${s.get('volume_24hr', 0):,.0f} ·
+                        Spike {s.get('spike_ratio', 0):.1f}x · Vol {row_vol} ·
                         Entry {entry_str} · {anomaly_type}
                     </div>
                 </td>
@@ -446,6 +462,9 @@ class Dashboard:
             font-family: 'JetBrains Mono', monospace;
             color: var(--accent-cyan);
             line-height: 1.2;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }}
 
         .stat-label {{
@@ -798,7 +817,7 @@ class Dashboard:
             </div>
             <div class="stat-card">
                 <div class="stat-icon">💰</div>
-                <div class="stat-value">${total_volume:,.0f}</div>
+                <div class="stat-value">{vol_display}</div>
                 <div class="stat-label">Signal Volume</div>
             </div>
         </div>
