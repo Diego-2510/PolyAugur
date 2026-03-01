@@ -2,17 +2,37 @@
 
 **Polymarket Insider Signal Detection System**
 
-Detects anomalous trading activity on [Polymarket](https://polymarket.com) that may indicate informed/insider trading. Combines statistical anomaly detection, LLM analysis (Mistral), on-chain whale intelligence (CLOB), and real-time Telegram alerts.
+Detects anomalous trading activity on [Polymarket](https://polymarket.com) that may indicate informed/insider trading. Combines multi-layer statistical anomaly detection, LLM analysis (Mistral), on-chain trade intelligence (CLOB), and real-time Telegram alerts.
 
 ---
 
 ## Architecture
 
 ```
-Gamma API (markets) → Anomaly Detector → Mistral LLM → CLOB Trade Analyzer → Signal Store → Telegram
-      ↓                     ↓                 ↓               ↓                    ↓
-  1000+ markets        Score & filter    Validate top     Whale detection     SQLite + alerts
-  per cycle            (free, fast)      candidates       (on-chain)          + performance
+Gamma API (10,000+ markets)
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  LAYER 1 — Statistical Pre-Filter (free, all markets)          │
+│  Volume spikes · Price conviction · Topic sensitivity · Time   │
+│  → score ≥ 0.40 passed to LLM                                 │
+└────────────────────────┬────────────────────────────────────────┘
+                         │  ~10–15 flagged markets
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)          │
+│  Structured JSON reasoning · Confidence ≥ 0.60 confirmed       │
+└────────────────────────┬────────────────────────────────────────┘
+                         │  ~3–8 confirmed signals
+                         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  LAYER 3 — CLOB On-Chain Analysis                              │
+│  Whale detection · Wallet concentration · Directional bias     │
+│  → Confidence boost up to +15%                                 │
+└────────────────────────┬────────────────────────────────────────┘
+                         │
+                         ▼
+              SQLite  ·  Telegram  ·  HTML Dashboard
 ```
 
 ## Pipeline (9-Step Cycle)
@@ -21,23 +41,45 @@ Gamma API (markets) → Anomaly Detector → Mistral LLM → CLOB Trade Analyzer
 |------|-----------|-------------|
 | 1 | `data_fetcher.py` | Fetch active markets from Gamma API (paginated, sports filtered) |
 | 2 | `data_fetcher.py` | Build market snapshots with real baseline volumes |
-| 3 | `orchestrator.py` | Price velocity enrichment (cross-cycle delta) |
-| 4 | `anomaly_detector.py` | Statistical anomaly detection (volume spike, price conviction, topic sensitivity) |
-| 5 | `orchestrator.py` | Filter markets with score ≥ 0.45 for LLM analysis |
-| 6 | `mistral_analyzer.py` | Mistral LLM validation (batched 3/prompt, JSON-mode, whale context) |
-| 7 | `trade_analyzer.py` | CLOB on-chain trade analysis (whale detection, wallet concentration) |
+| 3 | `orchestrator.py` | Price velocity enrichment (cross-cycle delta tracking) |
+| 4 | `anomaly_detector.py` | Multi-layer anomaly scoring (volume spike, price conviction, two-tier topic sensitivity) |
+| 5 | `orchestrator.py` | Filter markets with score ≥ 0.40 for LLM analysis |
+| 6 | `mistral_analyzer.py` | Mistral LLM validation (batched 4/prompt, JSON-mode, whale context) |
+| 7 | `trade_analyzer.py` | CLOB on-chain trade analysis (whale detection, wallet concentration, burst timing) |
 | 8 | `orchestrator.py` | Whale confidence boost → deduplicate → store → Telegram notify |
 | 9 | `performance_tracker.py` | Automatic outcome resolution & P&L tracking (every 10 cycles) |
 
 ## Detection Capabilities
 
-- **Volume Spikes**: 3x–50x baseline volume surges
-- **Price Conviction**: Extreme YES/NO prices with high volume
-- **Topic Sensitivity**: Geopolitical, central bank, regulatory markets weighted higher
-- **Time Horizon Filter**: Markets >365 days auto-penalized (no insider advantage)
-- **Whale Detection**: Trades >$5k, wallet concentration, directional bias
-- **Timing Bursts**: Last-hour volume vs historical average
-- **Coordinated Buying**: Multiple whales with aligned directional bias
+### Two-Tier Insider Topic System
+
+PolyAugur distinguishes between markets where insider knowledge is **definitely possible** vs. merely **plausible**:
+
+**Critical Topics (×1.40 multiplier)** — Someone definitely knows the outcome first:
+- Military operations (Pentagon, NSC decisions)
+- Central bank decisions (FOMC rate decisions, emergency cuts)
+- Regulatory rulings (SEC/FDA approvals, ETF decisions)
+- Executive decisions (pardons, nominations, executive orders)
+- Corporate M&A (mergers, acquisitions, CEO changes)
+
+**Elevated Topics (×1.15 multiplier)** — Insider info is plausible:
+- Geopolitical negotiations (ceasefire, peace deals, treaties)
+- Trade policy (tariffs, sanctions, trade deals)
+- Legal/DOJ (indictments, arrests, impeachment)
+- Energy decisions (OPEC production cuts)
+- Tech regulation (antitrust, bans)
+
+**No Boost** — Generic markets without insider edge:
+- Crypto price predictions, weather bets, entertainment, general elections
+
+### Other Detection Layers
+
+- **Volume Spikes**: 2x–50x baseline volume surges (1.5x scores minimally)
+- **Price Conviction**: Extreme YES/NO prices with high volume-to-liquidity pressure
+- **Time Horizon Filter**: Markets >365 days penalized (no insider advantage on long-term speculation)
+- **Sudden Volume Surge**: 24h volume >60% of all-time volume → highly suspicious
+- **Whale Detection**: Trades >$5k, wallet concentration >40%, directional bias >85%
+- **Timing Bursts**: Last-hour volume vs historical hourly average (3x+ = suspicious)
 
 ## Quick Start
 
@@ -50,7 +92,7 @@ pip install -r requirements.txt
 
 # Configure
 cp .env.example .env
-# Edit .env: add MISTRAL_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# Edit .env: add MISTRAL_API_KEY (required), TELEGRAM_BOT_TOKEN + CHAT_ID (optional)
 
 # Run
 python run.py --once          # Single detection cycle
@@ -60,10 +102,10 @@ python run.py --stats         # Show DB statistics
 python run.py --check         # Check signal outcomes
 ```
 
-## Dashboard
+## Dashboard & Exports
 
 ```bash
-python -m src.dashboard                    # Last 24h signals (table)
+python -m src.dashboard                    # Last 24h signals (CLI table)
 python -m src.dashboard --hours 72         # Last 72h
 python -m src.dashboard --whales           # Only whale-flagged signals
 python -m src.dashboard --performance      # Win/loss breakdown
@@ -72,13 +114,18 @@ python -m src.dashboard --export html      # Export dark-mode HTML report
 python -m src.dashboard --all --export html # Full history HTML report
 ```
 
+The HTML report is a self-contained dark-mode dashboard with:
+- Stats grid (total signals, win rate, avg confidence, signal volume)
+- Trade distribution bar (BUY YES / BUY NO / HOLD)
+- Interactive signal table with confidence bars, outcome badges, and direct Polymarket links
+
 ## Telegram Alerts
 
 Signals are pushed to Telegram in real-time with:
 - Trade direction (BUY_YES / BUY_NO / HOLD)
-- Confidence score with whale boost indicator
-- Risk level, holding period, position size
-- 🐋 On-chain intelligence (whale count, top wallet %, directional bias, burst score)
+- Confidence score with boost indicator
+- Risk level, suggested holding period, position size
+- Anomaly type classification and market context
 - Daily performance reports with win rate
 
 Setup: Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID, add both to `.env`.
@@ -94,22 +141,22 @@ Setup: Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID, 
 
 ## Cost Profile
 
-| Resource | Per Cycle | Per Day (24h, 30s interval) |
-|----------|-----------|---------------------------|
+| Resource | Per Cycle | Per Day (24h @ 30s) |
+|----------|-----------|---------------------|
 | Gamma API | ~10 calls | ~2,880 calls (free) |
-| Mistral API | 3–10 calls | ~860–2,880 calls |
+| Mistral API | 3–12 calls | ~860–3,400 calls |
 | CLOB API | 0–15 calls | ~0–4,320 calls (free) |
 | **Estimated cost** | ~$0.01 | **~$3–8/day** |
 
 ## Signal Flow Example
 
 ```
-1. Gamma API returns 1,200 active markets
-2. Anomaly Detector scores all 1,200 → 15 flagged (score ≥ 0.45)
-3. Mistral validates 15 in 5 batched calls → 4 confirmed (confidence ≥ 0.65)
-4. CLOB analyzes 4 confirmed → 1 has whale activity (3 whales, 89% directional BUY)
-5. Whale boost: confidence 0.78 → 0.88 (+0.10)
-6. Signal saved to SQLite, pushed to Telegram with 🐋 tag
+1. Gamma API returns 1,200 active markets (volume ≥ $8,000)
+2. Anomaly Detector scores all 1,200 → 12 flagged (score ≥ 0.40)
+3. Mistral validates 12 in 3 batched calls → 5 confirmed (confidence ≥ 0.60)
+4. CLOB analyzes 5 confirmed → 1 has whale activity (3 whales, 89% directional BUY)
+5. Whale boost: confidence 0.72 → 0.82 (+0.10)
+6. Signal saved to SQLite, pushed to Telegram
 7. After market resolves: outcome checked, P&L recorded
 ```
 
@@ -121,15 +168,16 @@ PolyAugur/
 ├── app.py                      # Streamlit dashboard (legacy)
 ├── config.py                   # All configuration & thresholds
 ├── requirements.txt            # Python dependencies
+├── polyaugur.service           # systemd service for 24/7 deployment
 ├── .env.example                # Environment variable template
 │
 ├── src/
 │   ├── __init__.py
 │   ├── data_fetcher.py         # Gamma API client + snapshot builder
-│   ├── anomaly_detector.py     # Statistical anomaly scoring (volume, price, topic)
-│   ├── mistral_analyzer.py     # Mistral LLM signal validation (batched, whale context)
-│   ├── trade_analyzer.py       # CLOB on-chain whale detection
-│   ├── signal_store.py         # SQLite persistence + dedup + migration
+│   ├── anomaly_detector.py     # Multi-layer anomaly scoring (volume, price, two-tier topics)
+│   ├── mistral_analyzer.py     # Mistral LLM signal validation (batched, JSON-mode)
+│   ├── trade_analyzer.py       # CLOB on-chain whale detection & wallet profiling
+│   ├── signal_store.py         # SQLite persistence + dedup + schema migration
 │   ├── telegram_notifier.py    # Telegram push notifications + daily reports
 │   ├── performance_tracker.py  # Automatic outcome resolution & P&L tracking
 │   └── dashboard.py            # CLI signal explorer + CSV/HTML export
@@ -139,27 +187,29 @@ PolyAugur/
 ├── tests/
 │   └── __init__.py
 ├── data/                       # SQLite database (gitignored)
-├── logs/                       # Daily log files (gitignored)
+├── logs/                       # Log files (gitignored)
 └── exports/                    # CSV/HTML exports (gitignored)
 ```
 
 ## Key Design Decisions
 
-- **Two-tier detection**: Free statistical pre-screening on all markets, costly LLM only on flagged candidates → 95% cost reduction
-- **Batched Mistral calls**: 3 markets per prompt → 3x fewer API calls
-- **Time horizon filter**: Markets >365 days automatically penalized (insider info has no advantage on long-term speculation)
+- **Two-tier detection**: Free statistical pre-screening on all markets, costly LLM only on flagged candidates → ~95% cost reduction vs. analyzing every market with LLM
+- **Two-tier topic system**: Critical insider topics (×1.40) vs. elevated (×1.15) vs. no boost — prevents false positives from generic crypto/weather/entertainment markets
+- **Batched Mistral calls**: 4 markets per prompt → fewer API calls, structured JSON output
+- **Time horizon filter**: Markets >365 days automatically penalized (insider info decays over time)
 - **Whale confidence boost**: On-chain evidence increases confidence by up to +15%, never decreases it
 - **Deduplication**: 4-hour window prevents repeat signals for the same market
-- **Graceful degradation**: Rule-based fallback when Mistral API unavailable
+- **Graceful degradation**: Rule-based fallback when Mistral API is unavailable
+- **Production-ready**: systemd service file, health monitoring, auto-restart on errors
 
 ## Tech Stack
 
 - **Python 3.11+**
-- **Mistral AI** — LLM signal validation (mistral-small-latest)
-- **SQLite** — Signal persistence
-- **Telegram Bot API** — Real-time alerts
-- **Polymarket Gamma API** — Market data
-- **Polymarket CLOB API** — On-chain trade data
+- **Mistral AI** (`mistral-large-latest`) — LLM signal validation
+- **SQLite** — Signal persistence, deduplication, outcome tracking
+- **Telegram Bot API** — Real-time alerts & daily reports
+- **Polymarket Gamma API** — Market data (10,000+ markets)
+- **Polymarket CLOB API** — On-chain trade data (whale detection)
 
 ## Author
 
@@ -171,4 +221,4 @@ MIT
 
 ---
 
-> **Disclaimer**: This is a research/educational tool. Signals are not financial advice. Use at your own risk. Always do your own research before trading on prediction markets.
+> **Disclaimer**: This is a research/educational tool built for a hackathon. Signals are not financial advice. Use at your own risk. Always do your own research before trading on prediction markets.
