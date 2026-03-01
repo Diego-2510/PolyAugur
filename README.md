@@ -13,23 +13,23 @@ Gamma API (10,000+ markets)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 1 — Statistical Pre-Filter (free, all markets)          │
-│  Volume spikes · Price conviction · Topic sensitivity · Time   │
-│  → score ≥ 0.55 passed to LLM                                 │
+│  LAYER 1 — Statistical Pre-Filter (free, all markets)           │
+│  Volume spikes · Price conviction · Topic sensitivity · Time    │
+│  → score ≥ 0.55 passed to LLM                                   │
 └────────────────────────┬────────────────────────────────────────┘
                          │  ~5–8 flagged markets
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)          │
-│  Structured JSON reasoning · Confidence ≥ 0.65 confirmed       │
+│  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)           │
+│  Structured JSON reasoning · Confidence ≥ 0.65 confirmed        │
 └────────────────────────┬────────────────────────────────────────┘
                          │  ~2–5 confirmed signals
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 3 — CLOB On-Chain Analysis + Wallet Profiling           │
-│  Whale detection · Wallet concentration · Directional bias     │
-│  Trader classification (INSIDER/SMART_MONEY/GAMBLER/REGULAR)   │
-│  → Confidence boost up to +15%                                 │
+│  LAYER 3 — CLOB On-Chain Analysis + Wallet Profiling            │
+│  Whale detection · Wallet concentration · Directional bias      │
+│  Trader classification (INSIDER/SMART_MONEY/GAMBLER/REGULAR)    │
+│  → Confidence boost up to +15%                                  │
 └────────────────────────┬────────────────────────────────────────┘
                          │
                          ▼
