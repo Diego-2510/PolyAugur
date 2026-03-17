@@ -13,17 +13,18 @@ Gamma API (10,000+ markets)
     │
     ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 1 — Statistical Pre-Filter (free, all markets)           │
-│  Volume spikes · Price conviction · Topic sensitivity · Time    │
-│  → score ≥ 0.55 passed to LLM                                   │
+│  LAYER 1 — Elite Pre-Filter (quantitative, topic-agnostic)      │
+│  Spike ≥ 2.5x · Recency ≥ 15% · Horizon ≤ 90d                  │
+│  Blacklist: tweets, crypto prices, weather, sport excluded       │
+│  → score ≥ 0.45 passed to LLM                                   │
 └────────────────────────┬────────────────────────────────────────┘
-                         │  ~5–8 flagged markets
+                         │  ~10–32 flagged markets
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)           │
-│  Structured JSON reasoning · Confidence ≥ 0.65 confirmed        │
+│  Structured JSON reasoning · Confidence ≥ 0.80 confirmed        │
 └────────────────────────┬────────────────────────────────────────┘
-                         │  ~2–5 confirmed signals
+                         │  ~1–5 confirmed signals
                          ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │  LAYER 3 — CLOB On-Chain Analysis + Wallet Profiling            │
@@ -49,53 +50,85 @@ Gamma API (10,000+ markets)
 | 1 | `data_fetcher.py` | Fetch active markets from Gamma API (paginated, sports filtered) |
 | 2 | `data_fetcher.py` | Build market snapshots with real baseline volumes |
 | 3 | `orchestrator.py` | Price velocity enrichment (cross-cycle delta tracking) |
-| 4 | `anomaly_detector.py` | Multi-layer anomaly scoring (volume spike, price conviction, two-tier topic sensitivity) |
-| 5 | `orchestrator.py` | Filter markets with score ≥ 0.55 for LLM analysis |
+| 3.5 | `orchestrator.py` | Elite pre-filter: spike ≥ 2.5x, horizon ≤ 90d, recency ≥ 15% |
+| 4 | `anomaly_detector.py` | Multi-layer scoring + blacklist exclusion. Topic keywords boost score, no hard gate. |
+| 5 | `orchestrator.py` | Filter score ≥ 0.45, top-32 by score → LLM |
 | 6 | `mistral_analyzer.py` | Mistral LLM validation (batched 4/prompt, JSON-mode, whale context) |
 | 7 | `trade_analyzer.py` | CLOB on-chain trade analysis (whale detection, wallet concentration, burst timing) |
 | 8 | `orchestrator.py` | Whale confidence boost → deduplicate → store → Telegram notify |
 | 9 | `performance_tracker.py` | Automatic outcome resolution & P&L tracking (every 10 cycles) |
 
-## Detection Capabilities
+## Detection Philosophy: Blacklist Mode
 
-### Two-Tier Insider Topic System
+**Phase 15** switched from a *whitelist* (only known insider topics allowed) to a *blacklist* (everything is analyzed except explicitly excluded categories).
 
-PolyAugur distinguishes between markets where insider knowledge is **definitely possible** vs. merely **plausible**:
+**Why:** Whitelist mode missed genuine signals when:
+- Polymarket titles contained Unicode dashes (`Fed Pause–Pause–Cut`) breaking keyword matching
+- New insider categories were not yet in the keyword list
+- Markets with unusual volume surges but no exact keyword match were silently dropped
 
-**Critical Topics (×1.40 multiplier)** — Someone definitely knows the outcome first:
-- Military operations (Pentagon, NSC decisions)
-- Central bank decisions (FOMC rate decisions, emergency cuts)
-- Regulatory rulings (SEC/FDA approvals, ETF decisions)
-- Executive decisions (pardons, nominations, executive orders)
-- Corporate M&A (mergers, acquisitions, CEO changes)
+**Now:** Every market with a sufficient volume spike passes to Mistral — which makes the actual quality decision at ≥ 0.80 confidence. Topic keywords still exist as **score boosters**, giving known insider categories priority when the Mistral quota is full.
 
-**Elevated Topics (×1.15 multiplier)** — Insider info is plausible:
-- Geopolitical negotiations (ceasefire, peace deals, treaties)
-- Trade policy (tariffs, sanctions, trade deals)
-- Legal/DOJ (indictments, arrests, impeachment)
-- Energy decisions (OPEC production cuts)
-- Tech regulation (antitrust, bans)
+### Blacklist (Hard Exclusions)
 
-**No Boost** — Generic markets without insider edge:
-- Crypto price predictions, weather bets, entertainment, general elections
+These market types are excluded before scoring — no insider advantage is possible:
 
-### Other Detection Layers
+- **Countable public activity**: tweet counts, post counts, follower counts
+- **Crypto price movements**: Bitcoin, Ethereum, altcoin price predictions
+- **Weather / natural events**: hurricanes, earthquakes, rainfall
+- **Entertainment**: Oscars, Grammys, box office results
+- **Sports outcomes**: Super Bowl, NBA Finals, World Series
+- **General sentiment / polling**: approval ratings, favorability polls
 
-- **Volume Spikes**: 2x–50x baseline volume surges (minimum 2x required for scoring)
+### Topic Score Boosters (not gates)
+
+Topics that boost the anomaly score, giving them priority in the Mistral queue:
+
+**Critical (×1.40)** — Someone definitely knows first:
+- Military operations, airstrikes, troop deployments
+- Federal Reserve / FOMC rate decisions (`fed pause`, `fed cut`, `fomc`, `rate cut`, `next three decisions`, ...)
+- FDA drug approvals, emergency use authorizations
+- Executive decisions (pardons, nominations, cabinet firings)
+- Corporate M&A, CEO resignations, IPO dates
+- SEC/ETF rulings
+
+**Elevated (×1.15)** — Insider advantage is plausible:
+- Ceasefires, peace deals, hostage releases
+- Trade policy, tariffs, sanctions
+- DOJ indictments, criminal charges, impeachment
+- Government shutdowns, debt ceiling, budget deals
+- OPEC production decisions
+- Tech regulation, antitrust rulings
+- Short-horizon elections (≤ 35 days: mayoral, gubernatorial, runoff, snap)
+
+**No boost (×1.0)** — Everything else: still analyzed, Mistral decides.
+
+### Unicode-Safe Matching
+
+Polymarket titles frequently use Unicode punctuation (`–`, `—`, `…`). Phase 15 normalizes all titles before keyword matching:
+
+```
+"Will the Fed Pause–Pause–Cut in the next three decisions?"
+→ "will the fed pause pause cut in the next three decisions?"
+→ 'fed pause' ✓  'next three decisions' ✓
+```
+
+## Other Detection Layers
+
+- **Volume Spikes**: 2.5x–80x+ baseline surges (tiered scoring: 8x+ → max score)
 - **Price Conviction**: Extreme YES/NO prices with high volume-to-liquidity pressure
-- **Time Horizon Filter**: Markets >365 days penalized (no insider advantage on long-term speculation)
-- **Sudden Volume Surge**: 24h volume >60% of all-time volume → highly suspicious
-- **Minimum Volume**: Markets below $15,000 24h volume are excluded (noise filter)
+- **Recency Surge**: 24h volume >60% of all-time → active surge multiplier ×1.40
+- **Time Horizon**: Markets >365 days penalized; ≤ 14 days get imminent boost ×1.25
 - **Whale Detection**: Trades >$5k, wallet concentration >40%, directional bias >85%
 - **Timing Bursts**: Last-hour volume vs historical hourly average (3x+ = suspicious)
 
 ### Wallet Profiler
 
 Each whale's trading history is analyzed and classified:
-- 🧠 **INSIDER**: Win rate >65% OR new account with large bets → confidence +5% per whale
-- 🐋 **SMART_MONEY**: Win rate >60%, significant capital invested → confidence +3%
+- 🧠 **INSIDER**: Win rate >65% OR new account with large bets → confidence +5%
+- 🐋 **SMART_MONEY**: Win rate >60%, significant capital → confidence +3%
 - 🎰 **GAMBLER**: Win rate <40% with ≥10 resolved bets → confidence −5%
-- 👤 **REGULAR**: Neutral impact on signal confidence
+- 👤 **REGULAR**: Neutral impact
 
 ## Quick Start
 
@@ -168,15 +201,30 @@ Setup: Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID, 
 ## Signal Flow Example
 
 ```
-1. Gamma API returns 800 active markets (volume ≥ $15,000)
-2. Anomaly Detector scores all 800 → 6 flagged (score ≥ 0.55)
-3. Mistral validates 6 in 2 batched calls → 3 confirmed (confidence ≥ 0.65)
-4. CLOB analyzes 3 confirmed → 1 has whale activity (3 whales, 89% directional BUY)
-5. Wallet Profiler: 2/3 whales classified as INSIDER (win rate >65%)
-6. Whale boost: confidence 0.72 → 0.82 (+0.10)
-7. Signal saved to SQLite, pushed to Telegram
-8. After market resolves: outcome checked, P&L recorded
+1. Gamma API returns 800 active markets (volume ≥ $30,000)
+2. Elite pre-filter: 800 → ~20 (spike ≥ 2.5x, recency ≥ 15%, horizon ≤ 90d)
+3. AnomalyDetector scores 20 → blacklist excludes 2 (tweets/crypto price)
+   → 18 scored: 🔴 5 critical-boosted, 🟡 4 elevated-boosted, ⚪ 9 no-topic
+4. Score ≥ 0.45: 12 flagged → top-32 sorted by score → Mistral (3 batches)
+5. Mistral confirms 4 (confidence ≥ 0.80)
+6. CLOB analyzes 4 → 1 has whale activity (3 whales, 89% directional BUY)
+7. Whale boost: confidence 0.82 → 0.92 (+0.10)
+8. Signal saved to SQLite, pushed to Telegram
+9. After market resolves: outcome checked, P&L recorded
 ```
+
+## Key Design Decisions
+
+- **Blacklist over whitelist**: All markets pass unless explicitly excluded — no unknown insider category is silently dropped. Mistral is the quality gate.
+- **Unicode normalization**: Polymarket titles with `–`, `—`, `…` are normalized before all keyword matching — eliminates a class of silent false negatives.
+- **Topic boosting, not gating**: Known insider categories get higher scores (preferred Mistral queue position), but all markets above the score threshold reach Mistral.
+- **Mistral at 0.80**: Deliberately high confirmation threshold — fewer signals, higher precision.
+- **Wallet profiling**: Not all whales are equal — classifying traders by historical performance avoids boosting signals driven by known gamblers.
+- **Time horizon filter**: Markets >365 days penalized; ≤ 14 days get imminent boost.
+- **Whale confidence boost**: On-chain evidence increases confidence by up to +15%.
+- **Deduplication**: 4-hour window prevents repeat signals for the same market.
+- **Graceful degradation**: Rule-based fallback when Mistral API is unavailable.
+- **Production-ready**: systemd service file, health monitoring, exponential backoff, auto-restart on errors.
 
 ## Project Structure
 
@@ -191,7 +239,7 @@ PolyAugur/
 ├── src/
 │   ├── __init__.py
 │   ├── data_fetcher.py         # Gamma API client + snapshot builder
-│   ├── anomaly_detector.py     # Multi-layer anomaly scoring (volume, price, two-tier topics)
+│   ├── anomaly_detector.py     # Blacklist mode: scoring, Unicode normalization, topic boosters
 │   ├── mistral_analyzer.py     # Mistral LLM signal validation (batched, JSON-mode)
 │   ├── trade_analyzer.py       # CLOB on-chain whale detection
 │   ├── wallet_profiler.py      # Wallet history analysis & trader classification
@@ -206,18 +254,6 @@ PolyAugur/
 ├── logs/                       # Log files (gitignored)
 └── exports/                    # CSV/HTML exports (gitignored)
 ```
-
-## Key Design Decisions
-
-- **Elite filtering**: Pre-filter threshold at 0.55 ensures only markets with topic relevance OR extreme anomalies reach the LLM — generic volume spikes alone are not enough
-- **Two-tier topic system**: Critical insider topics (×1.40) vs. elevated (×1.15) vs. no boost — prevents false positives from generic crypto/weather/entertainment markets
-- **Wallet profiling**: Not all whales are equal — classifying traders by historical performance avoids boosting signals driven by known gamblers
-- **Batched Mistral calls**: 4 markets per prompt, max 8 calls per cycle → fewer API calls, structured JSON output
-- **Time horizon filter**: Markets >365 days automatically penalized (insider info decays over time)
-- **Whale confidence boost**: On-chain evidence increases confidence by up to +15%, never decreases it
-- **Deduplication**: 4-hour window prevents repeat signals for the same market
-- **Graceful degradation**: Rule-based fallback when Mistral API is unavailable
-- **Production-ready**: systemd service file, health monitoring, exponential backoff, auto-restart on errors
 
 ## Tech Stack
 

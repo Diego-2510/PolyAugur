@@ -1,12 +1,20 @@
 """
 PolyAugur Configuration
-Author: Diego Ringleb | Phase 14 — Precision Insider Filter | 2026-03-17
+Author: Diego Ringleb | Phase 15 — Blacklist Mode | 2026-03-17
 
-Filter philosophy:
-  - Lieber 0 Signals als 1 falsches Signal
-  - Nur Märkte, wo JEMAND mit Insider-Wissen die Antwort kennt
-  - Hoher Volumenschwellwert eliminiert Noise-Märkte
-  - Mistral als zweite Schicht: confirm >= 0.80 = sehr hohe Hürde
+Filter philosophy (Phase 15):
+  BLACKLIST statt Whitelist.
+  Alle Märkte werden analysiert, AUSSER explizit ausgeschlossene Kategorien.
+
+  Vorher (Phase 14): nur CRITICAL/ELEVATED Topics → Mistral
+  Jetzt  (Phase 15): alle Märkte mit Spike/Recency → Mistral,
+                     außer EXCLUSION_KEYWORDS (Tweets, Krypto-Preise, Wetter, Sport)
+
+  Qualitäts-Gate ist jetzt Mistral selbst (≥ 0.80),
+  nicht mehr der Topic-Gate im Orchestrator.
+
+  Topic-Multiplier bleibt: gibt Insider-Märkten höheren Score → bevorzugte
+  Sortierung vor Mistral. Kein Hard-Gate mehr.
 """
 
 import os
@@ -28,24 +36,23 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Detection Thresholds ─────────────────────────────────────────────────
-# AnomalyDetector: score = base_score × topic_multiplier
-# base_score: Volume (max 0.35) + Price (max 0.25) + Holder (0.0) = max 0.60
-# topic_multiplier: 0.20 (long-term) bis 1.80 (critical + imminent + surge)
+# Phase 15: Blacklist-Modus
 #
-# CONFIDENCE_THRESHOLD = 0.70:
-#   → Ohne Topic-Boost (mult 1.0): base >= 0.70 nötig → unmöglich (max 0.60)
-#     → Zwingt zwingend einen Topic-Match
-#   → Mit CRITICAL (×1.40) + imminent (×1.25) = ×1.75: base >= 0.40 → erreichbar
-#   → Effekt: KEIN Signal ohne gleichzeitig starkem Volume UND Insider-Topic
-CONFIDENCE_THRESHOLD = 0.70   # Anomaly-Score → Mistral weiterleiten
+# base_score max = 0.60 (Volume 0.35 + Price 0.25)
+# Ohne Topic-Boost: multiplier = 1.0 → max score = 0.60
+# Mit Recency-Surge (×1.40): max score = 0.84
+# Mit Topic-Boost CRITICAL (×1.40) + Surge (×1.40): max = 1.18 → cap 1.80
+#
+# CONFIDENCE_THRESHOLD = 0.45:
+#   → Erreichbar ohne Topic-Boost bei 3.5x Spike + Preisdruck
+#   → Zwingt trotzdem zu messbarem Spike + aktivem Surge
+#   → Mistral bei 0.80 ist der eigentliche Qualitäts-Gate
+CONFIDENCE_THRESHOLD = 0.45
 
-# Mistral Pre-Filter: nur Score >= 0.65 kommt zu Mistral
-# (redundant zu 0.70 als extra Sicherheitspuffer)
-MISTRAL_THRESHOLD    = 0.65
+# Identisch — kein redundanter zweiter Filter
+MISTRAL_THRESHOLD    = 0.45
 
-# Mistral Confirmation: Mistral muss >= 0.80 Konfidenz vergeben
-# → "Bin ich sehr sicher, dass hier Insider aktiv sind?"
-# → 0.80 lässt kaum Zweifel zu — sehr wenige Signals kommen durch
+# Mistral Confirmation: unveränderter hoher Standard
 MISTRAL_CONFIRM_MIN  = 0.80
 
 MAX_POSITION_SIZE_PCT = 0.10
@@ -65,34 +72,23 @@ MARKETS_PER_PAGE = 100
 MAX_PAGES        = 100
 
 # Mindestvolumen 24h: 30.000 USD
-# → Insider-Trades hinterlassen messbare Spuren erst ab diesem Volumen
-# → Eliminiert thin markets mit zufälligem Noise
 MIN_VOLUME_24H = 30_000
 
-# Mistral: 5 Calls × Batch 4 = max 20 Märkte pro Zyklus
-# → Zwingt das System, nur die allerbesten Anomalien weiterzugeben
-# → Weniger API-Kosten bei höherer Trefferquote
-MAX_MISTRAL_CALLS_PER_CYCLE = 5
+# Phase 15: Mehr Märkte zu Mistral möglich, da kein Topic-Gate
+# 8 Calls × Batch 4 = max 32 Märkte pro Zyklus
+MAX_MISTRAL_CALLS_PER_CYCLE = 8
 MISTRAL_BATCH_SIZE          = 4
 
 # ── Elite Gates ──────────────────────────────────────────────────────────
-# Mindest-Spike-Ratio: Volume muss >= 2.5x Baseline sein
-# → 1.5x–2.0x ist normales Markt-Rauschen, 2.5x ist auffällig
-MIN_SPIKE_RATIO = 2.5
-
-# Vol/Liquidität: Kaufdruck auf den Markt muss spürbar sein
+MIN_SPIKE_RATIO   = 2.5   # Volume >= 2.5x Baseline
 MIN_VOL_LIQ_RATIO = 1.5
+MAX_DAYS_TO_CLOSE = 90    # FOMC 3-Meeting-Zyklen bis 90 Tage
+MIN_RECENCY_RATIO = 0.15  # Surge muss noch aktiv sein
 
-# Märkte die in > 60 Tagen schließen: Insider-Vorteil nimmt stark ab
-MAX_DAYS_TO_CLOSE = 60
-
-# Recency: min. 25% des gesamten Volumens muss in letzten 24h sein
-# → Surge muss JETZT passieren, nicht historisch irgendwann
-MIN_RECENCY_RATIO = 0.25
-
-# Nur CRITICAL oder ELEVATED Topics können Anomalie-Status erreichen
-# → Kein Bitcoin-Preis, kein Sport, kein Wetter
-REQUIRE_CRITICAL_TOPIC = True
+# Phase 15: KEIN Topic-Gate mehr — Blacklist-Modus
+# Topic-Multiplier im AnomalyDetector bleibt als Score-Booster aktiv,
+# wird aber nicht mehr als Hard-Gate verwendet.
+REQUIRE_CRITICAL_TOPIC = False
 
 # ── Trade Analysis ───────────────────────────────────────────────────────
 TRADE_ANALYSIS_ENABLED       = True
