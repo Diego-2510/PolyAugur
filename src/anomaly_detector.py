@@ -1,15 +1,30 @@
 """
 PolyAugur Anomaly Detector - Multi-Layer Insider Signal Detection
-Phase 12.2: Strict insider focus with two-tier topic system.
+Phase 14: Research-based insider taxonomy with explicit exclusions.
 
-Design principle: Only flag markets where someone with privileged access
-(government official, regulator, corporate insider, military commander)
-KNOWS the outcome before public announcement.
+Insider taxonomy (from real Polymarket cases):
+  CONFIRMED real insider cases:
+    - Military operations (Venezuela $400k, Iran $1.2M, Iran supreme leader $553k)
+    - FOMC/Fed decisions (members know hours before)
+    - FDA drug approvals (panel members, pharma execs)
+    - Tech company internals (OpenAI employee fired, Google Year in Search $1M)
+    - Government personnel decisions (cabinet firings, Kristi Noem case)
+    - M&A / CEO changes (bankers, board members)
+    - Intelligence-based geopolitical (Israeli operatives charged for Polymarket bets)
+    - Elections with fraud (Bolivian local elections, short-horizon)
 
-NOT insider-tradeable: crypto price predictions, generic elections,
-weather bets, entertainment outcomes, general political sentiment.
+  EXPLICITLY EXCLUDED (no insider edge possible):
+    - Tweet/post count predictions (publicly countable)
+    - Crypto price predictions (no single person knows)
+    - Weather markets
+    - Sports outcomes
+    - Entertainment awards
+    - Long-horizon generic elections (>90 days, no fraud signal)
 
-Author: Diego Ringleb | Phase 12.2 | 2026-03-01
+Design: EXCLUSION_KEYWORDS applied first — any match → multiplier = 0.0
+        Then CRITICAL (×1.40) and ELEVATED (×1.15) tiers.
+
+Author: Diego Ringleb | Phase 14 | 2026-03-17
 """
 
 import logging
@@ -26,14 +41,45 @@ class AnomalyDetector:
     """
     Multi-layer anomaly detection for Polymarket insider signals.
 
-    Phase 12.2 changes:
-    - Two-tier topic system: critical (1.40x) vs elevated (1.15x)
-    - Removed broad keywords (bitcoin, ethereum, protest, etc.)
-    - Only events with actual privileged information get topic boost
-    - Tighter spike scoring: 1.5x = 0.05 (minimal contribution)
-    - Higher base threshold: 0.40
-    Target: 5–10 high-quality signals per cycle.
+    Phase 14 changes vs Phase 12.2:
+    - Explicit EXCLUSION_KEYWORDS applied before any boost
+      (tweets, post counts, crypto prices, weather → multiplier = 0.0)
+    - Volume scoring retiered: 2.5x→0.08, 3.5x→0.18, 5x→0.27, 8x→0.35
+      (prevents automatic base_score = 0.60 for every pre-filtered market)
+    - CRITICAL keywords tightened: removed 'nominate'/'appoint' standalone,
+      added explicit government personnel + intelligence patterns
+    - Elections split: short-horizon (<30d) in fraud-risk regions = ELEVATED,
+      long-horizon generic = no boost
+    - Elon Musk tweet counts, crypto prices explicitly excluded
+    Target: 0–3 ultra-precise signals per cycle.
     """
+
+    # ── Explicit exclusions: NO insider advantage possible ────────────────
+    # Applied FIRST. Any match → multiplier forced to 0.0.
+    EXCLUSION_KEYWORDS = [
+        # Countable public activity — no insider edge
+        'tweet', 'tweets', 'post ', 'posts ', 'how many times',
+        'how often', 'retweet', 'followers', 'subscribers',
+        # Crypto price movements — determined by market, no single insider
+        'bitcoin', 'ethereum', 'crypto price', 'btc price', 'eth price',
+        'will btc', 'will eth', 'reach $', 'above $', 'below $',
+        'price of bitcoin', 'price of ethereum',
+        # Crypto market cap rankings — algorithmic, no insider
+        'market cap rank', 'flippening',
+        # Weather / nature — no insider
+        'rain', 'hurricane', 'earthquake', 'wildfire', 'flood', 'blizzard',
+        'temperature', 'snow in',
+        # Entertainment — no insider (unless Oscar voting leaks, but not meaningful)
+        'oscar', 'grammy', 'emmy', 'golden globe', 'nobel prize literature',
+        'box office', 'streaming views', 'album sales',
+        # Sports — already filtered by data_fetcher but double-guard
+        'super bowl', 'world series', 'nba finals', 'stanley cup',
+        # Generic sentiment / polling — no actionable insider
+        'approval rating', 'poll shows', 'favorability',
+        # Long-range crypto ecosystem (no regulatory insider needed)
+        'will solana', 'will bnb', 'will xrp', 'will dogecoin', 'will shiba',
+        'memecoin', 'nft ',
+    ]
 
     def __init__(self):
         self.confidence_threshold = config.CONFIDENCE_THRESHOLD
@@ -44,7 +90,13 @@ class AnomalyDetector:
     def detect_volume_spike(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect unusual volume relative to THIS market's own baseline.
-        Phase 12.2: 1.5x contributes minimally (0.05), real signal starts at 2.0x.
+
+        Phase 14 retier — prevents automatic max score for every 2.5x spike:
+          >= 8.0x → 0.35 (critical — very rare, genuine anomaly)
+          >= 5.0x → 0.27 (high — strong signal)
+          >= 3.5x → 0.18 (moderate-high)
+          >= 2.5x → 0.08 (moderate — entry threshold from elite pre-filter)
+          <  2.5x → 0.00 (pre-filter should have caught this)
         """
         current_vol = float(snapshot.get('current_volume', snapshot.get('volume_24hr', 0)))
         baseline = float(snapshot.get('baseline', 0))
@@ -59,14 +111,17 @@ class AnomalyDetector:
 
         spike_ratio = current_vol / baseline
 
-        if spike_ratio >= 5.0:
+        if spike_ratio >= 8.0:
             score = 0.35
             severity = 'critical'
-        elif spike_ratio >= 3.0:
-            score = 0.25
+        elif spike_ratio >= 5.0:
+            score = 0.27
             severity = 'high'
-        elif spike_ratio >= 2.0:
-            score = 0.10
+        elif spike_ratio >= 3.5:
+            score = 0.18
+            severity = 'moderate_high'
+        elif spike_ratio >= 2.5:
+            score = 0.08
             severity = 'moderate'
         else:
             score = 0.0
@@ -85,7 +140,7 @@ class AnomalyDetector:
     def detect_price_anomaly(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Detect unusual price movements indicating informed trading.
-        Checks conviction, volume/liquidity pressure, one-sided bets.
+        Unchanged from Phase 12.2 — logic is sound.
         """
         yes_price = float(snapshot.get('yes_price', 0.5))
         no_price = float(snapshot.get('no_price', 0.5))
@@ -144,19 +199,34 @@ class AnomalyDetector:
 
     def calculate_topic_sensitivity(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Two-tier insider topic system (Phase 12.2).
+        Phase 14: Research-based insider taxonomy.
 
-        CRITICAL topics (×1.40): A specific person/group DEFINITELY knows
-        the outcome before public. Government decisions, regulatory rulings,
-        military orders, FDA verdicts, M&A deals.
+        Step 0 — EXCLUSION CHECK:
+          If any exclusion keyword matches → multiplier = 0.0 immediately.
+          (tweet counts, crypto prices, weather, entertainment)
 
-        ELEVATED topics (×1.15): Insider info is PLAUSIBLE but less certain.
-        Diplomatic negotiations, indictments, antitrust probes, OPEC meetings.
+        Step 1 — TIME HORIZON:
+          > 365d → ×0.30 | > 180d → ×0.55 | > 90d → ×0.80
+          ≤ 14d  → ×1.25 | ≤ 30d  → ×1.10
 
-        NO BOOST: Crypto price predictions, generic elections, weather,
-        entertainment, sports, general sentiment markets.
+        Step 2 — CRITICAL topics (×1.40):
+          Confirmed real Polymarket insider categories:
+          Military operations, Fed/FOMC, FDA approvals,
+          Executive appointments (by POTUS specifically),
+          Corporate M&A, CEO changes, government personnel firings,
+          intelligence/espionage operations.
 
-        Returns multiplier 0.20–1.80 applied to base_score.
+        Step 3 — ELEVATED topics (×1.15):
+          Plausible insider advantage:
+          Ceasefire/peace deals, sanctions, indictments/arrests,
+          tech regulation, OPEC, antitrust, short-horizon elections
+          in fraud-risk contexts (<30d), government shutdowns.
+
+        Step 4 — RECENCY SURGE:
+          > 60% of all-time volume in last 24h → ×1.40
+          > 35% → ×1.15
+
+        Returns multiplier 0.0–1.80.
         """
         question = snapshot.get('question', '').lower()
         volume_24hr = float(snapshot.get('volume_24hr', 0))
@@ -166,7 +236,19 @@ class AnomalyDetector:
         multiplier = 1.0
         reasons = []
 
-        # ── Factor 1: Time Horizon ─────────────────────────────────────────
+        # ── Step 0: EXCLUSION CHECK (applied before everything else) ────────
+        # Any exclusion match → this market has no insider potential → kill it.
+        exclusion_matched = [kw for kw in self.EXCLUSION_KEYWORDS if kw in question]
+        if exclusion_matched:
+            return {
+                'multiplier': 0.0,
+                'reasons': [f"excluded:{exclusion_matched[0].strip()}"],
+                'recency_ratio': round(volume_24hr / volume_total, 3) if volume_total > 0 else 0,
+                'excluded': True
+            }
+
+        # ── Step 1: Time Horizon ─────────────────────────────────────────────
+        days_to_close = None
         try:
             if end_date_iso:
                 closes_at = datetime.fromisoformat(end_date_iso.replace('Z', '+00:00'))
@@ -190,53 +272,134 @@ class AnomalyDetector:
         except (ValueError, TypeError, AttributeError):
             pass
 
-        # ── Factor 2a: CRITICAL insider topics (×1.40) ────────────────────
-        # Someone DEFINITELY knows the outcome before announcement.
+        # ── Step 2: CRITICAL insider topics (×1.40) ──────────────────────────
+        #
+        # Rule: A SPECIFIC named person or institution with EXCLUSIVE
+        # pre-announcement knowledge determines the outcome.
+        # Source: Real Polymarket insider cases (Forbes, Atlantic, NPR, Wired)
+        #
         critical_topics = [
-            # Military commands (Pentagon, NSC, White House Situation Room)
-            'attack ', 'airstrike', 'invasion', 'troops deploy',
-            'military action', 'declare war', 'nuclear',
-            'missile strike', 'military operation',
-            # Central bank decisions (FOMC members, Fed staff)
-            'fed ', 'federal reserve', 'rate cut', 'rate hike', 'fomc',
-            'powell', 'fed chair', 'emergency rate',
-            # Regulatory rulings (SEC commissioners, FDA panel)
-            'sec approv', 'sec reject', 'etf approv', 'etf reject',
-            'fda approv', 'drug approv', 'emergency use',
-            # Executive decisions (POTUS, senior advisors)
-            'executive order', 'pardon', 'commute sentence',
-            'nominate', 'nomination', 'appoint',
-            # Corporate M&A (board members, investment bankers)
-            'merger', 'acquisition', 'takeover', 'buyout',
-            'ceo resign', 'ceo fired', 'ceo step down',
+            # ── Military / Intelligence (Pentagon, NSC, CIA, IDF) ─────────
+            # Cases: Venezuela $400k, Iran $1.2M, Iranian airstrike $553k
+            'airstrike', 'air strike', 'missile strike',
+            'military operation', 'military action', 'military strike',
+            'troops deploy', 'troop withdrawal', 'invasion',
+            'declare war', 'declaration of war',
+            'nuclear launch', 'nuclear strike', 'nuclear test',
+            'covert operation', 'special forces',
+            'targeted killing', 'drone strike',
+            'attack on ', 'strike on ',
+
+            # ── Federal Reserve / Central Banks (FOMC members) ────────────
+            # Cases: Rate decisions known by Fed governors before announcement
+            'federal reserve', 'fed rate', 'fomc',
+            'rate cut', 'rate hike', 'rate pause',
+            'interest rate decision', 'emergency rate',
+            'powell announce', 'fed chair',
+            'basis point', 'bps cut', 'bps hike',
+            'ecb rate', 'bank of england rate', 'boe rate',
+
+            # ── FDA / Drug Approvals (panel members, pharma insiders) ─────
+            # Cases: FDA panelists, senior pharma executives
+            'fda approv', 'fda reject', 'fda decision',
+            'drug approv', 'drug reject',
+            'emergency use authorization',
+            'breakthrough therapy', 'accelerated approval',
+            'clinical trial result', 'phase 3 result',
+            'vaccine approv', 'vaccine authoriz',
+
+            # ── Executive / Presidential Orders (POTUS, senior staff) ─────
+            # Cases: Cabinet firings (Noem), pardons, executive orders
+            'executive order', 'presidential order',
+            'pardon ', 'commute sentence', 'clemency',
+            'fired by trump', 'fired by president', 'removed by president',
+            'cabinet fired', 'secretary fired', 'director fired',
+            'appointed by president', 'nominated by president',
+            'resign from cabinet', 'step down from cabinet',
+
+            # ── Corporate M&A / CEO (board members, i-bankers) ───────────
+            # Cases: Classic insider trading category, now on prediction markets
+            'merger', 'acquisition', 'takeover bid', 'buyout',
+            'hostile takeover', 'leveraged buyout',
+            'ceo resign', 'ceo fired', 'ceo step', 'ceo replace',
+            'chief executive resign', 'chief executive fired',
+            'board of directors', 'shareholder vote',
+            'ipo price', 'ipo date',
+
+            # ── SEC / Regulatory Approvals (commissioners, staff) ─────────
+            # Cases: ETF approvals, enforcement actions
+            'sec approv', 'sec reject', 'sec ruling',
+            'etf approv', 'etf reject', 'etf decision',
+            'sec enforcement', 'sec charges',
+            'cftc ruling', 'cftc approv',
+
+            # ── Tech Company Internals (employees, contractors) ───────────
+            # Cases: OpenAI employee fired, Google Year in Search $1M
+            'openai', 'google search trend', 'year in search',
+            'google announce', 'apple announce', 'meta announce',
+            'microsoft announce',
+            'gpt-5', 'gpt-6', 'gemini ultra',
+            'product launch', 'new model release',
         ]
 
-        # ── Factor 2b: ELEVATED insider topics (×1.15) ────────────────────
-        # Insider info is plausible but less certain.
+        # ── Step 3: ELEVATED insider topics (×1.15) ───────────────────────
+        #
+        # Rule: Insider advantage is PLAUSIBLE — diplomats, prosecutors,
+        # intelligence analysts, election officials, energy ministers.
+        # Short-horizon elections included: fraud/early count access possible.
+        #
         elevated_topics = [
-            # Geopolitical negotiations (diplomats, mediators)
-            'ceasefire', 'peace deal', 'peace agreement',
-            'treaty', 'diplomatic', 'embassy',
-            # Trade policy (trade representatives, lobbyists)
-            'tariff', 'trade deal', 'trade war', 'sanction',
-            # Legal/DOJ (prosecutors, grand jury members)
-            'indictment', 'arrest', 'impeach', 'doj ',
-            # Government operations (congressional leadership)
-            'government shutdown', 'debt ceiling', 'default',
-            # Crypto regulatory decisions (not price predictions)
-            'crypto regulation', 'crypto ban', 'stablecoin regulation',
-            'cftc', 'approved by',
-            # Tech regulation (antitrust investigators)
-            'antitrust', 'monopoly', 'break up', 'ban tiktok',
-            # Energy decisions (OPEC ministers)
-            'opec', 'oil production cut', 'drilling ban', 'pipeline',
-            # Clinical trials (researchers, pharma executives)
-            'clinical trial', 'vaccine approv', 'pandemic',
-            # Short-term elections (election officials, party insiders)
-            'special election', 'runoff', 'recall', 'referendum',
-            # Geopolitical flashpoints (intelligence agencies)
-            'coup', 'north korea', 'taiwan', 'south china sea',
-            'nato deploy', 'nato article',
+            # ── Diplomatic / Peace negotiations (mediators, diplomats) ────
+            'ceasefire', 'peace deal', 'peace agreement', 'peace talks',
+            'treaty sign', 'diplomatic agreement',
+            'hostage deal', 'hostage release',
+            'nato summit', 'g7 ', 'g20 ',
+
+            # ── Sanctions / Trade policy (trade reps, lobbyists) ─────────
+            'sanction', 'trade deal', 'trade agreement',
+            'tariff on ', 'tariff announ', 'trade war',
+            'export ban', 'import ban',
+
+            # ── Legal / DOJ / Prosecution (prosecutors, grand jury) ───────
+            'indictment', 'grand jury', 'arraignment',
+            'doj charge', 'doj indict', 'criminal charge',
+            'arrest warrant', 'extradition',
+            'impeachment', 'articles of impeachment',
+            'conviction', 'guilty verdict', 'acquittal',
+
+            # ── Government operations (congressional leadership) ──────────
+            'government shutdown', 'debt ceiling', 'continuing resolution',
+            'budget deal', 'spending bill',
+            'default on debt', 'treasury default',
+
+            # ── Geopolitical flashpoints (intelligence agencies) ──────────
+            'north korea', 'taiwan strait', 'south china sea',
+            'nato article 5', 'nato deploy',
+            'coup attempt', 'coup succeed',
+            'regime change', 'government collapse',
+
+            # ── OPEC / Energy policy (ministers, insiders) ───────────────
+            'opec', 'opec+', 'oil production cut', 'oil production increase',
+            'drilling ban', 'pipeline approv', 'pipeline reject',
+            'lng export', 'natural gas pipeline',
+
+            # ── Tech regulation / antitrust (investigators, staffers) ─────
+            'antitrust lawsuit', 'antitrust ruling',
+            'break up ', 'forced divestiture',
+            'ban tiktok', 'tiktok ban',
+            'crypto regulation', 'crypto ban', 'stablecoin bill',
+            'crypto bill', 'digital asset law',
+
+            # ── Elections: SHORT horizon only (<= 35 days)  ──────────────
+            # Fraud/early count: election officials, party insiders can know.
+            # BUT only if market closes within 35 days (not generic long-range).
+            # Longer elections checked separately with days_to_close guard below.
+            'mayoral election', 'gubernatorial election',
+            'special election', 'by-election', 'snap election',
+            'runoff election', 'runoff vote',
+            'recall election', 'recall vote',
+            'referendum vote', 'ballot measure',
+            'vote count', 'election result',
         ]
 
         critical_matched = [t for t in critical_topics if t in question]
@@ -245,11 +408,26 @@ class AnomalyDetector:
         if critical_matched:
             multiplier *= 1.40
             reasons.append(f"critical_insider:{critical_matched[0].strip()}")
-        elif elevated_matched:
-            multiplier *= 1.15
-            reasons.append(f"elevated_insider:{elevated_matched[0].strip()}")
 
-        # ── Factor 3: Sudden volume surge ─────────────────────────────────
+        elif elevated_matched:
+            # Extra guard for elections: only boost if closing soon
+            # Long-horizon elections (>35d) get no elevated boost —
+            # insider advantage evaporates over time.
+            election_keywords = [
+                'mayoral election', 'gubernatorial election', 'special election',
+                'by-election', 'snap election', 'runoff election', 'runoff vote',
+                'recall election', 'recall vote', 'vote count', 'election result'
+            ]
+            is_election_keyword = any(kw in question for kw in election_keywords)
+
+            if is_election_keyword and days_to_close is not None and days_to_close > 35:
+                # Long-horizon election → no boost (fraud risk too diffuse)
+                reasons.append(f"election_too_far:{days_to_close}d_no_boost")
+            else:
+                multiplier *= 1.15
+                reasons.append(f"elevated_insider:{elevated_matched[0].strip()}")
+
+        # ── Step 4: Sudden volume surge ──────────────────────────────────────
         if volume_total > 0:
             recency_ratio = volume_24hr / volume_total
             if recency_ratio > 0.60:
@@ -264,7 +442,8 @@ class AnomalyDetector:
         return {
             'multiplier': multiplier,
             'reasons': reasons,
-            'recency_ratio': round(volume_24hr / volume_total, 3) if volume_total > 0 else 0
+            'recency_ratio': round(volume_24hr / volume_total, 3) if volume_total > 0 else 0,
+            'excluded': False
         }
 
     # ==================== AGGREGATION ====================
@@ -272,14 +451,20 @@ class AnomalyDetector:
     def detect_anomaly(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         """
         Main detection pipeline: Aggregate all layers → final score.
+
         Score = (volume + price + holder) × topic_time_multiplier
-        Threshold: score ≥ 0.40 → flag for Mistral
+
+        Special case: if topic_sensitivity returns multiplier = 0.0
+        (exclusion matched), score is forced to 0.0 regardless of
+        volume/price signals.
+
+        Threshold: score >= CONFIDENCE_THRESHOLD → flag for Mistral
         """
         try:
             volume_result = self.detect_volume_spike(snapshot)
-            price_result = self.detect_price_anomaly(snapshot)
+            price_result  = self.detect_price_anomaly(snapshot)
             holder_result = self.detect_holder_anomalies(snapshot)
-            topic_result = self.calculate_topic_sensitivity(snapshot)
+            topic_result  = self.calculate_topic_sensitivity(snapshot)
 
             base_score = (
                 volume_result['score'] +
@@ -287,6 +472,7 @@ class AnomalyDetector:
                 holder_result['score']
             )
 
+            # Exclusion: multiplier = 0.0 kills the signal completely
             final_score = round(base_score * topic_result['multiplier'], 3)
             anomaly_detected = final_score >= self.confidence_threshold
 
@@ -298,16 +484,16 @@ class AnomalyDetector:
                 'ready_for_mistral': anomaly_detected,
 
                 'breakdown': {
-                    'volume_spike': volume_result,
-                    'price_anomaly': price_result,
-                    'holder_behavior': holder_result,
+                    'volume_spike':      volume_result,
+                    'price_anomaly':     price_result,
+                    'holder_behavior':   holder_result,
                     'topic_sensitivity': topic_result
                 },
 
-                'market_id': snapshot.get('id'),
-                'question': snapshot.get('question', 'Unknown'),
+                'market_id':   snapshot.get('id'),
+                'question':    snapshot.get('question', 'Unknown'),
                 'volume_24hr': snapshot.get('volume_24hr', 0),
-                'timestamp': datetime.now(timezone.utc).isoformat()
+                'timestamp':   datetime.now(timezone.utc).isoformat()
             }
 
             if anomaly_detected:
@@ -315,7 +501,13 @@ class AnomalyDetector:
                     f"🚨 ANOMALY: {snapshot.get('question', '')[:55]} | "
                     f"Score: {final_score:.3f} "
                     f"(base: {base_score:.2f} × {topic_result['multiplier']:.2f}) | "
-                    f"Vol: ${snapshot.get('volume_24hr', 0):,.0f}"
+                    f"Vol: ${snapshot.get('volume_24hr', 0):,.0f} | "
+                    f"Reasons: {topic_result['reasons']}"
+                )
+            elif topic_result.get('excluded'):
+                logger.debug(
+                    f"🚫 Excluded: {snapshot.get('question', '')[:55]} | "
+                    f"Reason: {topic_result['reasons']}"
                 )
             else:
                 logger.debug(
@@ -339,110 +531,140 @@ class AnomalyDetector:
         results = [self.detect_anomaly(s) for s in snapshots]
         results.sort(key=lambda x: x.get('score', 0), reverse=True)
 
-        detected_count = sum(1 for r in results if r.get('anomaly_detected'))
+        detected_count  = sum(1 for r in results if r.get('anomaly_detected'))
+        excluded_count  = sum(1 for r in results if r.get('breakdown', {})
+                              .get('topic_sensitivity', {}).get('excluded', False))
+
         logger.info(
             f"📊 Batch: {len(results)} markets analyzed | "
-            f"{detected_count} anomalies detected ({detected_count/max(len(results),1)*100:.0f}%)"
+            f"{detected_count} anomalies ({detected_count/max(len(results),1)*100:.0f}%) | "
+            f"{excluded_count} excluded by keyword"
         )
         return results
 
 
+# ==================== TEST SUITE ====================
+
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 12.2 (Strict Insider)")
+    logger.info("🧪 PolyAugur Anomaly Detector Test - Phase 14 (Precision Insider)")
     logger.info("=" * 60)
 
     from datetime import timedelta
     detector = AnomalyDetector()
     now = datetime.now(timezone.utc)
 
-    # Test 1: 2028 Election → should NOT flag
-    print("\n[Test 1] 2028 Election (should NOT flag)...")
-    snap_election = {
-        'id': 't1', 'question': 'Will Nikki Haley win the 2028 US Presidential Election?',
-        'volume_24hr': 321_000, 'current_volume': 321_000, 'baseline': 50_000,
-        'yes_price': 0.08, 'no_price': 0.92, 'spread': 0.84,
-        'liquidity': 200_000, 'volume': 2_000_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=900)).isoformat()
-    }
-    r1 = detector.detect_anomaly(snap_election)
-    status = "✅" if not r1['anomaly_detected'] else "❌ FALSE POSITIVE"
-    print(f"   {status} Score={r1['score']:.3f} | Mult={r1['topic_multiplier']}")
+    def snap(id_, question, spike=5.0, days=14, recency=0.65, vol=150_000, liq=80_000, price=0.30):
+        baseline = vol / spike
+        return {
+            'id': id_, 'question': question,
+            'volume_24hr': vol, 'current_volume': vol, 'baseline': baseline,
+            'yes_price': price, 'no_price': 1 - price, 'spread': abs(price - (1 - price)),
+            'liquidity': liq, 'volume': vol / recency if recency > 0 else vol * 2,
+            'holders': [], 'end_date_iso': (now + timedelta(days=days)).isoformat()
+        }
 
-    # Test 2: Generic Bitcoin price → should NOT flag (no insider edge)
-    print("\n[Test 2] Bitcoin above 100k (should NOT flag — no insider info)...")
-    snap_btc = {
-        'id': 't2', 'question': 'Will Bitcoin be above $100,000 on March 31?',
-        'volume_24hr': 500_000, 'current_volume': 500_000, 'baseline': 100_000,
-        'yes_price': 0.55, 'no_price': 0.45, 'spread': 0.10,
-        'liquidity': 800_000, 'volume': 5_000_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=30)).isoformat()
-    }
-    r2 = detector.detect_anomaly(snap_btc)
-    status = "✅" if not r2['anomaly_detected'] else "❌ FALSE POSITIVE"
-    print(f"   {status} Score={r2['score']:.3f} | Mult={r2['topic_multiplier']}")
+    tests = [
+        # ── Should NOT flag (exclusions) ────────────────────────────────
+        ("❌ Elon tweets 1120-1159",
+         snap('e1', 'Will Elon Musk post 1120-1159 tweets in March 2026?'),
+         False),
+        ("❌ Bitcoin above $100k",
+         snap('e2', 'Will Bitcoin be above $100,000 on March 31?'),
+         False),
+        ("❌ Weather: rain in NYC",
+         snap('e3', 'Will it rain in New York City this weekend?', spike=3.0),
+         False),
+        ("❌ Oscar Best Picture",
+         snap('e4', 'Will Dune win the Oscar for Best Picture?', spike=3.0),
+         False),
 
-    # Test 3: Fed rate cut (critical insider) → SHOULD flag
-    print("\n[Test 3] Emergency Fed rate cut, 7 days (SHOULD flag — critical)...")
-    snap_fed = {
-        'id': 't3', 'question': 'Will the Fed announce an emergency rate cut this week?',
-        'volume_24hr': 200_000, 'current_volume': 200_000, 'baseline': 20_000,
-        'yes_price': 0.25, 'no_price': 0.75, 'spread': 0.50,
-        'liquidity': 100_000, 'volume': 300_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=7)).isoformat()
-    }
-    r3 = detector.detect_anomaly(snap_fed)
-    status = "✅" if r3['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Score={r3['score']:.3f} | Reasons={r3['breakdown']['topic_sensitivity']['reasons']}")
+        # ── Should NOT flag (no insider, no exclusion) ───────────────────
+        ("❌ 2028 US Election (far away)",
+         snap('e5', 'Will Trump win the 2028 US Presidential Election?',
+              spike=4.0, days=900, recency=0.10),
+         False),
+        ("❌ Generic protest",
+         snap('e6', 'Will there be protests in Washington DC this weekend?',
+              spike=3.0, days=3, recency=0.50),
+         False),
 
-    # Test 4: Airstrike (critical insider) → SHOULD flag high
-    print("\n[Test 4] US airstrike on Iran, 5 days (SHOULD flag high)...")
-    snap_geo = {
-        'id': 't4', 'question': 'Will the US conduct an airstrike on Iran before March 7?',
-        'volume_24hr': 180_000, 'current_volume': 180_000, 'baseline': 5_000,
-        'yes_price': 0.35, 'no_price': 0.65, 'spread': 0.30,
-        'liquidity': 80_000, 'volume': 200_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=5)).isoformat()
-    }
-    r4 = detector.detect_anomaly(snap_geo)
-    status = "✅" if r4['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Score={r4['score']:.3f} | Spike={r4['breakdown']['volume_spike']['spike_ratio']:.1f}x")
+        # ── Should FLAG (critical) ────────────────────────────────────────
+        ("✅ US airstrike on Iran (5d)",
+         snap('c1', 'Will the US conduct an airstrike on Iran before March 22?',
+              spike=8.0, days=5, recency=0.80, vol=180_000, liq=60_000),
+         True),
+        ("✅ Fed emergency rate cut (7d)",
+         snap('c2', 'Will the Fed announce an emergency rate cut this week?',
+              spike=6.0, days=7, recency=0.70, vol=200_000, liq=90_000),
+         True),
+        ("✅ FOMC rate decision (3d)",
+         snap('c3', 'Will the FOMC cut rates by 50bps at this meeting?',
+              spike=5.0, days=3, recency=0.65, vol=150_000, liq=70_000),
+         True),
+        ("✅ FDA drug approval (10d)",
+         snap('c4', 'Will the FDA approve Pfizer\'s new cancer drug this week?',
+              spike=5.5, days=10, recency=0.72, vol=120_000, liq=50_000),
+         True),
+        ("✅ CEO fired (7d)",
+         snap('c5', 'Will the CEO step down from the company this week?',
+              spike=7.0, days=7, recency=0.75, vol=200_000, liq=80_000),
+         True),
+        ("✅ OpenAI product launch (5d)",
+         snap('c6', 'Will OpenAI announce a new model release this week?',
+              spike=6.0, days=5, recency=0.70, vol=160_000, liq=75_000),
+         True),
 
-    # Test 5: Generic protest → should NOT flag
-    print("\n[Test 5] Generic protest market (should NOT flag — no insider)...")
-    snap_protest = {
-        'id': 't5', 'question': 'Will there be protests in Washington DC this weekend?',
-        'volume_24hr': 30_000, 'current_volume': 30_000, 'baseline': 10_000,
-        'yes_price': 0.70, 'no_price': 0.30, 'spread': 0.40,
-        'liquidity': 50_000, 'volume': 100_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=3)).isoformat()
-    }
-    r5 = detector.detect_anomaly(snap_protest)
-    status = "✅" if not r5['anomaly_detected'] else "❌ FALSE POSITIVE"
-    print(f"   {status} Score={r5['score']:.3f}")
+        # ── Should FLAG (elevated) ────────────────────────────────────────
+        ("✅ Ceasefire deal (14d)",
+         snap('v1', 'Will Russia and Ukraine sign a ceasefire agreement by April 1?',
+              spike=4.0, days=14, recency=0.55, vol=350_000, liq=200_000),
+         True),
+        ("✅ DOJ indictment (10d)",
+         snap('v2', 'Will the DOJ indict Trump ally this week?',
+              spike=4.5, days=10, recency=0.60, vol=180_000, liq=100_000),
+         True),
+        ("✅ Bolivian mayoral election (12d)",
+         snap('v3', 'Will Iván Arias win the 2026 La Paz mayoral election?',
+              spike=3.8, days=12, recency=0.50, vol=140_000, liq=80_000),
+         True),
+        ("❌ Bolivian mayoral election (60d) — too far",
+         snap('v4', 'Will Waldo win the 2026 La Paz mayoral election?',
+              spike=4.0, days=60, recency=0.40, vol=140_000, liq=80_000),
+         False),
+        ("✅ OPEC production cut (7d)",
+         snap('v5', 'Will OPEC+ announce an oil production cut this weekend?',
+              spike=5.0, days=7, recency=0.68, vol=160_000, liq=90_000),
+         True),
+    ]
 
-    # Test 6: Ceasefire (elevated insider) → should flag
-    print("\n[Test 6] Russia/Ukraine ceasefire, 14 days (SHOULD flag — elevated)...")
-    snap_cease = {
-        'id': 't6', 'question': 'Russia Ukraine ceasefire agreement by March 15?',
-        'volume_24hr': 350_000, 'current_volume': 350_000, 'baseline': 50_000,
-        'yes_price': 0.40, 'no_price': 0.60, 'spread': 0.20,
-        'liquidity': 200_000, 'volume': 1_000_000, 'holders': [],
-        'end_date_iso': (now + timedelta(days=14)).isoformat()
-    }
-    r6 = detector.detect_anomaly(snap_cease)
-    status = "✅" if r6['anomaly_detected'] else "❌ SHOULD FLAG"
-    print(f"   {status} Score={r6['score']:.3f} | Reasons={r6['breakdown']['topic_sensitivity']['reasons']}")
+    passed = 0
+    failed = 0
+    print(f"\n{'Test':<45} {'Expected':<10} {'Got':<8} {'Score':<8} {'Mult':<6} {'Status'}")
+    print("-" * 100)
 
-    # Batch ranking
-    print("\n[Batch] Ranking (geo > fed > ceasefire > btc/election/protest)...")
-    results = detector.batch_detect([snap_election, snap_btc, snap_fed, snap_geo, snap_protest, snap_cease])
-    for r in results:
-        flag = "🚨" if r['anomaly_detected'] else "✓ "
-        print(f"   {flag} {r['score']:.3f} × {r['topic_multiplier']} | {r['question'][:55]}")
+    for label, snapshot, expected in tests:
+        r = detector.detect_anomaly(snapshot)
+        got = r['anomaly_detected']
+        ok  = got == expected
+        if ok:
+            passed += 1
+        else:
+            failed += 1
+        status = "✅ PASS" if ok else "❌ FAIL"
+        reasons = r['breakdown']['topic_sensitivity']['reasons']
+        print(
+            f"{label:<45} {str(expected):<10} {str(got):<8} "
+            f"{r['score']:<8.3f} {r['topic_multiplier']:<6} "
+            f"{status}  {reasons}"
+        )
 
-    print("\n" + "=" * 60)
-    print("✅ Phase 12.2 Anomaly Detector: PASSED")
+    print(f"\n{'='*60}")
+    print(f"Results: {passed}/{passed+failed} passed | {failed} failed")
+    if failed == 0:
+        print("✅ Phase 14 Anomaly Detector: ALL TESTS PASSED")
+    else:
+        print("❌ Phase 14 Anomaly Detector: FAILURES DETECTED — review above")
     print("=" * 60)
 
 
