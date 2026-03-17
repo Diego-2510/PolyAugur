@@ -1,22 +1,27 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 14: Ultra-precision insider filter.
+Phase 15: Blacklist mode, anomaly_score fix, Topic-Gate entfernt.
 
 Pipeline per cycle:
-1.  Fetch all active markets (paginated, sports filtered)
-2.  Build snapshots with real baseline
-3.  Price velocity enrichment
-3.5 Elite pre-filter (spike, horizon, recency gates)
-4.  AnomalyDetector.batch_detect() → filtered snapshots
-4.5 Topic gate (REQUIRE_CRITICAL_TOPIC) → only insider topics
-5.  Filter: score >= MISTRAL_THRESHOLD
-6.  MistralAnalyzer.analyze_batch() → confirm >= MISTRAL_CONFIRM_MIN
-7.  Trade analysis (CLOB) → confirmed signals only
-8.  Whale confidence boost → Deduplicate → Store → Telegram
-9.  Performance check (every 10 cycles)
+1.   Fetch all active markets (paginated, sports filtered)
+2.   Build snapshots with real baseline
+3.   Price velocity enrichment
+3.5  Elite pre-filter (spike, horizon, recency gates)
+4.   AnomalyDetector.batch_detect() → Blacklist exclusion + topic score boosters
+5.   Filter: score >= MISTRAL_THRESHOLD, top-MAX markets
+6.   MistralAnalyzer.analyze_batch() → confirm >= MISTRAL_CONFIRM_MIN
+7.   Trade analysis (CLOB) → confirmed signals only
+8.   Whale confidence boost → Deduplicate → Store → Telegram
+9.   Performance check (every 10 cycles)
 
-Target: 0–3 ultra-precise insider signals per cycle.
-Author: Diego Ringleb | Phase 14 | 2026-03-17
+Phase 15 changes vs Phase 14:
+- Topic-Gate (Step 4.5) REMOVED — blacklist mode, Mistral is the quality gate
+- _process_signal(): anomaly_score now sourced from anomaly_result (fixes anomaly_score=0.0 bug)
+- anomaly_result passed through to _process_signal for correct score persistence
+- Blacklist logging added to Step 4 summary
+- Phase string updated throughout
+
+Author: Diego Ringleb | Phase 15 | 2026-03-17
 """
 
 import time
@@ -41,12 +46,13 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 14: ultra-precision insider filter.
-    - Elite pre-filter: spike >= 2.5x, horizon <= 60d, recency >= 25%
-    - Topic gate: only critical/elevated insider topics
-    - Anomaly threshold: CONFIDENCE_THRESHOLD (0.70)
-    - Mistral confirmation: MISTRAL_CONFIRM_MIN (0.80)
-    Target: 0–3 signals per cycle, only genuine insider activity.
+    Main polling loop. Phase 15: Blacklist mode.
+
+    Key changes from Phase 14:
+    - REQUIRE_CRITICAL_TOPIC gate removed. All markets with sufficient anomaly
+      score pass to Mistral. Topic keywords boost score but do not gate.
+    - anomaly_score correctly sourced from AnomalyDetector result (not Mistral dict).
+    - Blacklist exclusions logged at Step 4.
     """
 
     def __init__(self):
@@ -60,7 +66,7 @@ class Orchestrator:
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 14 – Ultra-Precision Insider Filter)")
+        logger.info("🚀 Orchestrator initialized (Phase 15 – Blacklist Mode)")
 
     # ==================== ENRICHMENT ====================
 
@@ -100,13 +106,13 @@ class Orchestrator:
         Boost confidence score when on-chain evidence supports the signal.
 
         Boost logic:
-        - Suspicious whale activity: +0.05
-        - Directional bias matches trade: +0.05
-        - Burst score >= 3.0: +0.03
-        - Top wallet >= 40%: +0.02
+        - Suspicious whale activity:        +0.05
+        - Directional bias matches trade:   +0.05
+        - Burst score >= 3.0:               +0.03
+        - Top wallet >= 40%:                +0.02
         - Max total boost: 0.15 (capped)
         """
-        boost = 0.0
+        boost    = 0.0
         raw_conf = result.get('confidence_score', 0.0)
 
         if trade_metrics.get('suspicious'):
@@ -114,8 +120,7 @@ class Orchestrator:
 
         trade_dir = result.get('recommended_trade', 'HOLD')
         dom_side  = trade_metrics.get('dominant_side', 'NONE')
-        if (trade_dir == 'BUY_YES' and dom_side == 'BUY') or \
-           (trade_dir == 'BUY_NO' and dom_side == 'SELL'):
+        if (trade_dir == 'BUY_YES' and dom_side == 'BUY') or            (trade_dir == 'BUY_NO'  and dom_side == 'SELL'):
             boost += 0.05
 
         if trade_metrics.get('burst_score', 1.0) >= 3.0:
@@ -124,7 +129,7 @@ class Orchestrator:
         if trade_metrics.get('top_wallet_pct', 0) >= 0.40:
             boost += 0.02
 
-        boost = min(boost, 0.15)
+        boost        = min(boost, 0.15)
         boosted_conf = min(raw_conf + boost, 0.99)
 
         result['confidence_raw']   = raw_conf
@@ -144,11 +149,17 @@ class Orchestrator:
     def _process_signal(
         self, result: Dict[str, Any],
         snapshot: Dict[str, Any],
+        anomaly_result: Dict[str, Any],
         trade_metrics: Dict[str, Any],
         cycle: int
     ) -> bool:
         """
         Persist + notify a single confirmed signal.
+
+        Phase 15 fix: anomaly_score sourced from anomaly_result (AnomalyDetector),
+        not from result (Mistral dict). Mistral dict has no 'score' key →
+        previously all signals stored anomaly_score=0.0.
+
         Returns True if signal was new (not duplicate).
         """
         market_id = result.get('market_id', snapshot.get('id', ''))
@@ -157,23 +168,30 @@ class Orchestrator:
             logger.debug(f"⏭️ Duplicate skipped: {result.get('question', '')[:45]}")
             return False
 
+        # Phase 15 Fix: anomaly_score aus AnomalyDetector-Result
+        anomaly_score = anomaly_result.get('score', result.get('score', 0.0))
+
         enriched = {
             **result,
-            'market_id':     market_id,
-            'yes_price':     snapshot.get('yes_price', 0.5),
-            'volume_24hr':   snapshot.get('volume_24hr', 0),
-            'spike_ratio':   snapshot.get('spike_ratio', 1.0),
-            'end_date_iso':  snapshot.get('end_date_iso'),
-            'cycle':         cycle,
-            'detected_at':   datetime.now(timezone.utc).isoformat(),
-            'whale_count':       trade_metrics.get('whale_count', 0),
-            'whale_volume_pct':  trade_metrics.get('whale_volume_pct', 0),
-            'top_wallet_pct':    trade_metrics.get('top_wallet_pct', 0),
-            'unique_wallets':    trade_metrics.get('unique_wallets', 0),
-            'directional_bias':  trade_metrics.get('directional_bias', 0.5),
-            'dominant_side':     trade_metrics.get('dominant_side', 'NONE'),
-            'burst_score':       trade_metrics.get('burst_score', 1.0),
-            'trade_suspicious':  trade_metrics.get('suspicious', False),
+            'market_id':          market_id,
+            'yes_price':          snapshot.get('yes_price', 0.5),
+            'volume_24hr':        snapshot.get('volume_24hr', 0),
+            'spike_ratio':        snapshot.get('spike_ratio', 1.0),
+            'end_date_iso':       snapshot.get('end_date_iso'),
+            'cycle':              cycle,
+            'detected_at':        datetime.now(timezone.utc).isoformat(),
+            # Phase 15: korrekte anomaly_score Persistierung
+            'score':              anomaly_score,
+            'anomaly_score':      anomaly_score,
+            # Trade / Whale Metrics
+            'whale_count':        trade_metrics.get('whale_count', 0),
+            'whale_volume_pct':   trade_metrics.get('whale_volume_pct', 0),
+            'top_wallet_pct':     trade_metrics.get('top_wallet_pct', 0),
+            'unique_wallets':     trade_metrics.get('unique_wallets', 0),
+            'directional_bias':   trade_metrics.get('directional_bias', 0.5),
+            'dominant_side':      trade_metrics.get('dominant_side', 'NONE'),
+            'burst_score':        trade_metrics.get('burst_score', 1.0),
+            'trade_suspicious':   trade_metrics.get('suspicious', False),
             'suspicious_reasons': trade_metrics.get('suspicious_reasons', []),
         }
 
@@ -192,6 +210,7 @@ class Orchestrator:
             f"📣 SIGNAL #{row_id}: {result.get('question', '')[:45]} | "
             f"Trade={result.get('recommended_trade')} | "
             f"Conf={result.get('confidence_score', 0):.2f}{boost_tag} | "
+            f"AnomalyScore={anomaly_score:.3f} | "
             f"Telegram={'✅' if sent else '⏭️'}{whale_tag}"
         )
 
@@ -234,8 +253,8 @@ class Orchestrator:
         snapshots = self.enrich_with_price_velocity(snapshots)
 
         # ── Step 3.5: Elite Pre-Filter ───────────────────────────────────
-        # Hard gates applied before AnomalyDetector — saves compute and
-        # eliminates low-quality candidates early.
+        # Hard quantitative gates before AnomalyDetector.
+        # Topic-agnostic: does not require insider keyword match.
         logger.info(
             f"🎯 Step 3.5: Elite pre-filter "
             f"(spike≥{config.MIN_SPIKE_RATIO}x, "
@@ -254,7 +273,7 @@ class Orchestrator:
             end_date = s.get('end_date_iso')
             if end_date:
                 try:
-                    closes = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    closes    = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
                     days_left = (closes - now_utc).days
                     if days_left > config.MAX_DAYS_TO_CLOSE:
                         continue
@@ -278,44 +297,76 @@ class Orchestrator:
         )
         snapshots = filtered_snapshots
 
-        # ── Step 4: Anomaly detection ────────────────────────────────────
-        logger.info(f"🔍 Step 4: Anomaly detection on {len(snapshots)} markets...")
+        # ── Step 4: Anomaly detection (Blacklist Mode) ───────────────────
+        # Phase 15: No topic gate. AnomalyDetector applies blacklist exclusions
+        # and uses topic keywords as score boosters only.
+        # All markets above score threshold → Mistral decides quality.
+        logger.info(f"🔍 Step 4: Anomaly detection (Blacklist Mode) on {len(snapshots)} markets...")
         anomaly_results = self.detector.batch_detect(snapshots)
         snapshot_map = {s['id']: s for s in snapshots}
 
-        # ── Step 4.5: Topic Gate ─────────────────────────────────────────
-        # Only results with a confirmed critical/elevated insider topic
-        # are allowed to proceed to Mistral.
-        if config.REQUIRE_CRITICAL_TOPIC:
-            before_topic = len(anomaly_results)
-            anomaly_results = [
-                r for r in anomaly_results
-                if any(
-                    'critical_insider' in reason or 'elevated_insider' in reason
-                    for reason in r.get('breakdown', {})
-                                  .get('topic_sensitivity', {})
-                                  .get('reasons', [])
-                )
-            ]
+        # Log blacklist exclusions for observability
+        blacklisted = [
+            r for r in anomaly_results
+            if r.get('blacklisted', False)
+        ]
+        if blacklisted:
             logger.info(
-                f"🔒 Topic gate: {len(anomaly_results)}/{before_topic} results "
-                f"have critical/elevated insider topic"
+                f"🚫 Blacklist: {len(blacklisted)} markets excluded "
+                f"({[r.get('question', '')[:35] for r in blacklisted[:3]]}...)"
             )
 
+        # Remove blacklisted results before scoring
+        anomaly_results = [r for r in anomaly_results if not r.get('blacklisted', False)]
+
+        # Log topic distribution for observability
+        critical_count  = sum(
+            1 for r in anomaly_results
+            if any('critical_insider' in reason
+                   for reason in r.get('breakdown', {})
+                                  .get('topic_sensitivity', {})
+                                  .get('reasons', []))
+        )
+        elevated_count  = sum(
+            1 for r in anomaly_results
+            if any('elevated_insider' in reason
+                   for reason in r.get('breakdown', {})
+                                  .get('topic_sensitivity', {})
+                                  .get('reasons', []))
+            and not any('critical_insider' in reason
+                        for reason in r.get('breakdown', {})
+                                       .get('topic_sensitivity', {})
+                                       .get('reasons', []))
+        )
+        no_topic_count  = len(anomaly_results) - critical_count - elevated_count
+
+        logger.info(
+            f"📊 Topic distribution: 🔴 {critical_count} critical | "
+            f"🟡 {elevated_count} elevated | ⚪ {no_topic_count} no-topic"
+        )
+
         # ── Step 5: Filter for Mistral ───────────────────────────────────
-        flagged = [
-            r for r in anomaly_results
-            if r.get('score', 0) >= config.MISTRAL_THRESHOLD
-        ]
+        # Phase 15: No topic gate. All markets with score >= MISTRAL_THRESHOLD
+        # proceed. Sort by score descending so highest-quality fill quota first.
+        flagged = sorted(
+            [r for r in anomaly_results if r.get('score', 0) >= config.MISTRAL_THRESHOLD],
+            key=lambda r: r.get('score', 0),
+            reverse=True
+        )
         max_markets = config.MAX_MISTRAL_CALLS_PER_CYCLE * config.MISTRAL_BATCH_SIZE
         flagged = flagged[:max_markets]
+
         logger.info(
             f"🚨 {len(flagged)} markets flagged for Mistral "
-            f"(score ≥ {config.MISTRAL_THRESHOLD})"
+            f"(score ≥ {config.MISTRAL_THRESHOLD}, top-{max_markets} by score)"
         )
 
         # ── Step 6: Mistral validation ───────────────────────────────────
-        confirmed = []
+        confirmed        = []
+        # Keep anomaly_results indexed by market_id for _process_signal
+        anomaly_map: Dict[str, Dict[str, Any]] = {
+            r['market_id']: r for r in anomaly_results if 'market_id' in r
+        }
 
         if flagged:
             n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)
@@ -338,7 +389,7 @@ class Orchestrator:
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
 
-        # ── Step 7: CLOB Trade Analysis (confirmed only) ────────────────
+        # ── Step 7: CLOB Trade Analysis (confirmed only) ─────────────────
         trade_results = {}
         if confirmed and config.TRADE_ANALYSIS_ENABLED:
             confirmed_snapshots = [
@@ -355,18 +406,22 @@ class Orchestrator:
             trade_results = self.trader.analyze_batch(confirmed_snapshots)
 
         # ── Step 8: Whale boost + Store + Notify ─────────────────────────
-        signals = []
+        signals     = []
         new_signals = 0
         whale_signals = 0
 
         for result in confirmed:
-            market_id = result.get('market_id', '')
-            snapshot  = snapshot_map.get(market_id, {})
-            trade_met = trade_results.get(market_id, {})
+            market_id    = result.get('market_id', '')
+            snapshot     = snapshot_map.get(market_id, {})
+            trade_met    = trade_results.get(market_id, {})
+            anomaly_res  = anomaly_map.get(market_id, {})
 
             result = self._apply_whale_boost(result, trade_met)
 
-            is_new = self._process_signal(result, snapshot, trade_met, self.cycle_count)
+            # Phase 15: anomaly_result passed to _process_signal for score fix
+            is_new = self._process_signal(
+                result, snapshot, anomaly_res, trade_met, self.cycle_count
+            )
             if is_new:
                 signals.append(result)
                 new_signals += 1
@@ -375,7 +430,7 @@ class Orchestrator:
 
         cycle_time = time.time() - cycle_start
 
-        # ── Step 9: Performance check (every 10 cycles) ─────────────────
+        # ── Step 9: Performance check (every 10 cycles) ──────────────────
         perf_summary = {}
         if self.cycle_count % 10 == 0:
             logger.info("📊 Step 9: Checking signal outcomes...")
@@ -385,7 +440,7 @@ class Orchestrator:
                 db_stats = self.store.get_stats()
                 self.notifier.send_daily_report(db_stats)
 
-        # ── Stats ────────────────────────────────────────────────────────
+        # ── Stats ─────────────────────────────────────────────────────────
         db_stats = self.store.get_stats()
         logger.info(
             f"📦 DB: {db_stats['total_signals']} total | "
@@ -407,6 +462,7 @@ class Orchestrator:
             'snapshots_built':    snapshots_raw_count,
             'elite_pre_filtered': elite_filtered_count,
             'snapshots_analyzed': len(snapshots),
+            'blacklisted':        len(blacklisted) if 'blacklisted' in dir() else 0,
             'anomalies_detected': len(flagged),
             'mistral_confirmed':  len(confirmed),
             'signals':            signals,
@@ -423,6 +479,7 @@ class Orchestrator:
             f"✅ Cycle #{self.cycle_count} complete | "
             f"{len(markets)} markets | "
             f"{snapshots_raw_count} snapshots ({elite_filtered_count} pre-filtered) | "
+            f"{len(blacklisted) if 'blacklisted' in dir() else 0} blacklisted | "
             f"{len(flagged)} anomalies | "
             f"{len(confirmed)} confirmed | "
             f"{new_signals} new signals | "
@@ -435,17 +492,18 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 14 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 15 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
             f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'} | "
-            f"Confirm: ≥{config.MISTRAL_CONFIRM_MIN:.0%}"
+            f"Confirm: ≥{config.MISTRAL_CONFIRM_MIN:.0%} | "
+            f"Mode: Blacklist"
         )
 
         cycle = 0
         while True:
             try:
                 summary = self.run_cycle()
-                cycle += 1
+                cycle  += 1
 
                 if max_cycles and cycle >= max_cycles:
                     logger.info(f"Max cycles ({max_cycles}) reached")
@@ -466,18 +524,19 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 14")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 15")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 14 — Ultra-Precision Insider Filter)...")
+    print("\n[Test 1] Single cycle (Phase 15 — Blacklist Mode)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
     print(f"   Markets fetched:     {summary['markets_fetched']}")
     print(f"   Snapshots built:     {summary['snapshots_built']}")
     print(f"   Elite pre-filtered:  {summary['elite_pre_filtered']} eliminated")
+    print(f"   Blacklisted:         {summary.get('blacklisted', 0)} excluded")
     print(f"   Snapshots analyzed:  {summary['snapshots_analyzed']}")
     print(f"   Anomalies flagged:   {summary['anomalies_detected']}")
     print(f"   Mistral confirmed:   {summary['mistral_confirmed']}")
@@ -491,19 +550,21 @@ def main():
     if summary['signals']:
         print(f"\n🚨 New signals:")
         for s in summary['signals']:
-            boost = s.get('confidence_boost', 0)
+            boost     = s.get('confidence_boost', 0)
             boost_str = f" (↑{boost:.0%})" if boost > 0 else ""
+            a_score   = s.get('anomaly_score', s.get('score', 0.0))
             print(f"   • {s.get('question', '')[:60]}")
             print(
                 f"     Trade: {s.get('recommended_trade')} | "
                 f"Conf: {s.get('confidence_score', 0):.2f}{boost_str} | "
+                f"AnomalyScore: {a_score:.3f} | "
                 f"Risk: {s.get('risk_level')}"
             )
     else:
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 14 Orchestrator: PASSED")
+    print("✅ Phase 15 Orchestrator: PASSED")
     print("=" * 60)
 
 
