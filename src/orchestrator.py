@@ -1,20 +1,22 @@
 """
 PolyAugur Orchestrator - Main Polling Loop
-Phase 12.2: Strict insider focus — quality over quantity.
+Phase 14: Ultra-precision insider filter.
 
 Pipeline per cycle:
-1. Fetch all active markets (paginated, sports filtered)
-2. Build snapshots with real baseline
-3. Price velocity enrichment
-4. AnomalyDetector.batch_detect() → all markets
-5. Filter: score >= 0.40
-6. MistralAnalyzer.analyze_batch() → flagged only (confirm >= 0.60)
-7. Trade analysis (CLOB) → confirmed signals only
-8. Whale confidence boost → Deduplicate → Store → Telegram
-9. Performance check (every 10 cycles)
+1.  Fetch all active markets (paginated, sports filtered)
+2.  Build snapshots with real baseline
+3.  Price velocity enrichment
+3.5 Elite pre-filter (spike, horizon, recency gates)
+4.  AnomalyDetector.batch_detect() → filtered snapshots
+4.5 Topic gate (REQUIRE_CRITICAL_TOPIC) → only insider topics
+5.  Filter: score >= MISTRAL_THRESHOLD
+6.  MistralAnalyzer.analyze_batch() → confirm >= MISTRAL_CONFIRM_MIN
+7.  Trade analysis (CLOB) → confirmed signals only
+8.  Whale confidence boost → Deduplicate → Store → Telegram
+9.  Performance check (every 10 cycles)
 
-Target: 5–10 high-quality insider signals per cycle.
-Author: Diego Ringleb | Phase 12.2 | 2026-03-01
+Target: 0–3 ultra-precise insider signals per cycle.
+Author: Diego Ringleb | Phase 14 | 2026-03-17
 """
 
 import time
@@ -39,11 +41,12 @@ logger = logging.getLogger(__name__)
 
 class Orchestrator:
     """
-    Main polling loop. Phase 12.2: strict insider focus.
-    - Pre-filter threshold 0.40
-    - Mistral confirmation ≥ 0.60
-    - 12 Mistral calls, batch size 4
-    Target: 5–10 signals per cycle, all plausible insider activity.
+    Main polling loop. Phase 14: ultra-precision insider filter.
+    - Elite pre-filter: spike >= 2.5x, horizon <= 60d, recency >= 25%
+    - Topic gate: only critical/elevated insider topics
+    - Anomaly threshold: CONFIDENCE_THRESHOLD (0.70)
+    - Mistral confirmation: MISTRAL_CONFIRM_MIN (0.80)
+    Target: 0–3 signals per cycle, only genuine insider activity.
     """
 
     def __init__(self):
@@ -57,7 +60,7 @@ class Orchestrator:
 
         self.snapshot_history: Dict[str, Dict[str, Any]] = {}
         self.cycle_count = 0
-        logger.info("🚀 Orchestrator initialized (Phase 12.2 – Strict Insider Focus)")
+        logger.info("🚀 Orchestrator initialized (Phase 14 – Ultra-Precision Insider Filter)")
 
     # ==================== ENRICHMENT ====================
 
@@ -214,6 +217,7 @@ class Orchestrator:
             logger.warning("No markets fetched – skipping cycle")
             return {
                 'cycle': self.cycle_count, 'markets_fetched': 0,
+                'snapshots_built': 0, 'elite_pre_filtered': 0,
                 'anomalies_detected': 0, 'signals': [],
                 'signal_count': 0, 'whale_signals': 0
             }
@@ -222,16 +226,81 @@ class Orchestrator:
         # ── Step 2: Snapshots ────────────────────────────────────────────
         logger.info("📸 Step 2: Building snapshots...")
         snapshots = self.fetcher.get_snapshots_batch(markets)
-        logger.info(f"✅ {len(snapshots)} snapshots built")
+        snapshots_raw_count = len(snapshots)
+        logger.info(f"✅ {snapshots_raw_count} snapshots built")
 
         # ── Step 3: Price velocity ───────────────────────────────────────
         logger.info("📈 Step 3: Price velocity enrichment...")
         snapshots = self.enrich_with_price_velocity(snapshots)
 
+        # ── Step 3.5: Elite Pre-Filter ───────────────────────────────────
+        # Hard gates applied before AnomalyDetector — saves compute and
+        # eliminates low-quality candidates early.
+        logger.info(
+            f"🎯 Step 3.5: Elite pre-filter "
+            f"(spike≥{config.MIN_SPIKE_RATIO}x, "
+            f"≤{config.MAX_DAYS_TO_CLOSE}d, "
+            f"recency≥{config.MIN_RECENCY_RATIO:.0%})..."
+        )
+        now_utc = datetime.now(timezone.utc)
+        filtered_snapshots = []
+
+        for s in snapshots:
+            # Gate 1: Volume spike must be significant
+            if s.get('spike_ratio', 1.0) < config.MIN_SPIKE_RATIO:
+                continue
+
+            # Gate 2: Market must close within MAX_DAYS_TO_CLOSE days
+            end_date = s.get('end_date_iso')
+            if end_date:
+                try:
+                    closes = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    days_left = (closes - now_utc).days
+                    if days_left > config.MAX_DAYS_TO_CLOSE:
+                        continue
+                except (ValueError, TypeError):
+                    pass  # No valid date → let it through
+
+            # Gate 3: Recent surge — majority of volume must be in last 24h
+            vol_total = s.get('volume', 0)
+            vol_24h   = s.get('volume_24hr', 0)
+            if vol_total > 0:
+                recency = vol_24h / vol_total
+                if recency < config.MIN_RECENCY_RATIO:
+                    continue
+
+            filtered_snapshots.append(s)
+
+        elite_filtered_count = len(snapshots) - len(filtered_snapshots)
+        logger.info(
+            f"🎯 Elite pre-filter: {len(filtered_snapshots)}/{snapshots_raw_count} "
+            f"snapshots passed ({elite_filtered_count} eliminated)"
+        )
+        snapshots = filtered_snapshots
+
         # ── Step 4: Anomaly detection ────────────────────────────────────
         logger.info(f"🔍 Step 4: Anomaly detection on {len(snapshots)} markets...")
         anomaly_results = self.detector.batch_detect(snapshots)
         snapshot_map = {s['id']: s for s in snapshots}
+
+        # ── Step 4.5: Topic Gate ─────────────────────────────────────────
+        # Only results with a confirmed critical/elevated insider topic
+        # are allowed to proceed to Mistral.
+        if config.REQUIRE_CRITICAL_TOPIC:
+            before_topic = len(anomaly_results)
+            anomaly_results = [
+                r for r in anomaly_results
+                if any(
+                    'critical_insider' in reason or 'elevated_insider' in reason
+                    for reason in r.get('breakdown', {})
+                                  .get('topic_sensitivity', {})
+                                  .get('reasons', [])
+                )
+            ]
+            logger.info(
+                f"🔒 Topic gate: {len(anomaly_results)}/{before_topic} results "
+                f"have critical/elevated insider topic"
+            )
 
         # ── Step 5: Filter for Mistral ───────────────────────────────────
         flagged = [
@@ -252,7 +321,7 @@ class Orchestrator:
             n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)
             logger.info(
                 f"🧠 Step 6: Mistral ({len(flagged)} markets, "
-                f"~{n_calls} API calls)..."
+                f"~{n_calls} API calls, confirm ≥ {config.MISTRAL_CONFIRM_MIN})..."
             )
 
             mistral_items = [
@@ -264,7 +333,7 @@ class Orchestrator:
 
             for result in mistral_results:
                 if (result.get('anomaly_detected')
-                        and result.get('confidence_score', 0) >= 0.65):
+                        and result.get('confidence_score', 0) >= config.MISTRAL_CONFIRM_MIN):
                     confirmed.append(result)
 
         logger.info(f"✅ {len(confirmed)} signals confirmed by Mistral")
@@ -335,7 +404,9 @@ class Orchestrator:
             'cycle':              self.cycle_count,
             'timestamp':          datetime.now(timezone.utc).isoformat(),
             'markets_fetched':    len(markets),
-            'snapshots_built':    len(snapshots),
+            'snapshots_built':    snapshots_raw_count,
+            'elite_pre_filtered': elite_filtered_count,
+            'snapshots_analyzed': len(snapshots),
             'anomalies_detected': len(flagged),
             'mistral_confirmed':  len(confirmed),
             'signals':            signals,
@@ -350,9 +421,13 @@ class Orchestrator:
 
         logger.info(
             f"✅ Cycle #{self.cycle_count} complete | "
-            f"{len(markets)} markets | {len(flagged)} anomalies | "
-            f"{len(confirmed)} confirmed | {new_signals} new signals | "
-            f"{whale_signals} whale alerts | {cycle_time:.1f}s"
+            f"{len(markets)} markets | "
+            f"{snapshots_raw_count} snapshots ({elite_filtered_count} pre-filtered) | "
+            f"{len(flagged)} anomalies | "
+            f"{len(confirmed)} confirmed | "
+            f"{new_signals} new signals | "
+            f"{whale_signals} whale alerts | "
+            f"{cycle_time:.1f}s"
         )
 
         return summary
@@ -360,9 +435,10 @@ class Orchestrator:
     def run(self, max_cycles: int = None):
         """Main polling loop."""
         logger.info(
-            f"🚀 PolyAugur Phase 12.2 | Poll: {config.POLL_INTERVAL_SEC}s | "
+            f"🚀 PolyAugur Phase 14 | Poll: {config.POLL_INTERVAL_SEC}s | "
             f"DB: {config.SIGNAL_DB_PATH} | "
-            f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}"
+            f"CLOB: {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'} | "
+            f"Confirm: ≥{config.MISTRAL_CONFIRM_MIN:.0%}"
         )
 
         cycle = 0
@@ -390,17 +466,19 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info("🧪 PolyAugur Orchestrator Test - Phase 12.2")
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 14")
     logger.info("=" * 60)
 
     orch = Orchestrator()
 
-    print("\n[Test 1] Single cycle (Phase 12.2 — Strict Insider Focus)...")
+    print("\n[Test 1] Single cycle (Phase 14 — Ultra-Precision Insider Filter)...")
     summary = orch.run_cycle()
 
     print(f"\n✅ Cycle Summary:")
     print(f"   Markets fetched:     {summary['markets_fetched']}")
     print(f"   Snapshots built:     {summary['snapshots_built']}")
+    print(f"   Elite pre-filtered:  {summary['elite_pre_filtered']} eliminated")
+    print(f"   Snapshots analyzed:  {summary['snapshots_analyzed']}")
     print(f"   Anomalies flagged:   {summary['anomalies_detected']}")
     print(f"   Mistral confirmed:   {summary['mistral_confirmed']}")
     print(f"   New signals:         {summary['signal_count']}")
@@ -425,7 +503,7 @@ def main():
         print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print("✅ Phase 12.2 Orchestrator: PASSED")
+    print("✅ Phase 14 Orchestrator: PASSED")
     print("=" * 60)
 
 
