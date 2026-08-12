@@ -1,0 +1,29 @@
+[
+  {
+    "id": "market-001",
+    "question": "Will Example Policy A pass?",
+    "volume24hr": "40,000",
+    "volume": "120000",
+    "liquidity": "50000",
+    "endDate": "2027-06-30T12:00:00Z",
+    "outcomePrices": "[\"0.40\", \"0.60\"]",
+    "tags": [
+      {
+        "label": "Politics"
+      }
+    ]
+  },
+  {
+    "id": "market-002",
+    "question": "Will Example Company announce a merger?",
+    "volume_24hr": "55000",
+    "volume": "180000",
+    "liquidityNum": "75000",
+    "end_date_iso": "2027-07-15T12:00:00Z",
+    "outcomePrices": [
+      "0.30",
+      "0.70"
+    ],
+    "tags": []
+  }
+]

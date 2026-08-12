@@ -1,0 +1,14 @@
+{
+  "anomaly_detected": true,
+  "confidence_score": 0.86,
+  "anomaly_type": "volume_spike",
+  "reasoning": "Unsupported trade enum must be rejected.",
+  "recommended_trade": "BUY",
+  "recommended_position_size_pct": 0.08,
+  "risk_level": "medium",
+  "holding_period_hours": 24,
+  "supporting_evidence": [
+    "6.2x volume spike"
+  ],
+  "counter_evidence": []
+}

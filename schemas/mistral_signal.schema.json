@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Diego-2510/PolyAugur/schemas/mistral_signal.schema.json",
+  "title": "PolyAugur Mistral Signal",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "anomaly_detected",
+    "confidence_score",
+    "anomaly_type",
+    "reasoning",
+    "recommended_trade",
+    "recommended_position_size_pct",
+    "risk_level",
+    "holding_period_hours",
+    "supporting_evidence",
+    "counter_evidence"
+  ],
+  "properties": {
+    "anomaly_detected": {
+      "type": "boolean"
+    },
+    "confidence_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0
+    },
+    "anomaly_type": {
+      "type": "string",
+      "enum": [
+        "volume_spike",
+        "new_large_holder",
+        "coordinated_buying",
+        "smart_reversal",
+        "price_conviction",
+        "none"
+      ]
+    },
+    "reasoning": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "recommended_trade": {
+      "type": "string",
+      "enum": [
+        "BUY_YES",
+        "BUY_NO",
+        "HOLD"
+      ]
+    },
+    "recommended_position_size_pct": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 0.1
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "holding_period_hours": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 168
+    },
+    "supporting_evidence": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    },
+    "counter_evidence": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
+    }
+  }
+}

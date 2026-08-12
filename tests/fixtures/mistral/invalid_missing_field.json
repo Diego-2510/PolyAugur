@@ -1,0 +1,13 @@
+{
+  "anomaly_detected": true,
+  "confidence_score": 0.86,
+  "anomaly_type": "volume_spike",
+  "reasoning": "Missing risk_level must be rejected.",
+  "recommended_trade": "BUY_YES",
+  "recommended_position_size_pct": 0.08,
+  "holding_period_hours": 24,
+  "supporting_evidence": [
+    "6.2x volume spike"
+  ],
+  "counter_evidence": []
+}

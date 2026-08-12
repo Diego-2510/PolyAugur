@@ -1,0 +1,29 @@
+[
+  {
+    "id": "market-002",
+    "question": "Will Example Company announce a merger?",
+    "volume_24hr": "56000",
+    "volume": "181000",
+    "liquidityNum": "76000",
+    "end_date_iso": "2027-07-15T12:00:00Z",
+    "outcomePrices": [
+      "0.31",
+      "0.69"
+    ],
+    "tags": []
+  },
+  {
+    "id": "market-003",
+    "question": "Will Example Regulator approve the filing?",
+    "volume24Hrs": "62000",
+    "volume": "250000",
+    "liquidity": "90000",
+    "closesAt": "2027-08-01T12:00:00Z",
+    "outcomePrices": "[\"0.52\", \"0.48\"]",
+    "tags": [
+      {
+        "label": "Regulation"
+      }
+    ]
+  }
+]

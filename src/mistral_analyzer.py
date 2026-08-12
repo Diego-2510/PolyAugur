@@ -2,14 +2,15 @@
 PolyAugur Mistral Analyzer - LLM-powered Signal Validation
 Phase 15: Blacklist-Mode compatible.
 
-Sprint-0 addition:
+Sprint-0 additions:
 - Observation-change metrics use actual elapsed time.
 - Linearized hourly price change is explicitly not presented as a forecast.
+- Untrusted LLM output is validated against the JSON-Schema contract before
+  local safety overrides are applied.
 
 Author: Diego Ringleb | Phase 15 | 2026-03-17
 """
 
-import json
 import logging
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -18,30 +19,13 @@ from typing import Any, Dict, List, Optional
 from mistralai import Mistral
 
 import config
+from src.llm_contract import LLMOutputContractError, parse_signal_response
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-
 logger = logging.getLogger(__name__)
-
-
-EXPECTED_FIELDS = {
-    "anomaly_detected": bool,
-    "confidence_score": float,
-    "anomaly_type": str,
-    "reasoning": str,
-    "recommended_trade": str,
-    "recommended_position_size_pct": float,
-    "risk_level": str,
-    "holding_period_hours": (
-        int,
-        float,
-    ),
-    "supporting_evidence": list,
-    "counter_evidence": list,
-}
 
 
 SYSTEM_PROMPT = """You are an expert prediction market analyst specializing in insider trading detection on Polymarket.
@@ -142,16 +126,11 @@ class MistralAnalyzer:
     def __init__(self):
         if not config.MISTRAL_API_KEY:
             logger.warning(
-                "⚠️ MISTRAL_API_KEY not set – "
-                "will use rule-based fallback"
+                "⚠️ MISTRAL_API_KEY not set – will use rule-based fallback"
             )
-
             self.client = None
-
         else:
-            self.client = Mistral(
-                api_key=config.MISTRAL_API_KEY
-            )
+            self.client = Mistral(api_key=config.MISTRAL_API_KEY)
 
         self.call_count = 0
         self.error_count = 0
@@ -169,47 +148,18 @@ class MistralAnalyzer:
 
         try:
             numeric = float(value)
-
-        except (
-            TypeError,
-            ValueError,
-        ):
+        except (TypeError, ValueError):
             return "N/A"
 
         if signed:
-            return (
-                f"{numeric:+.{decimals}f}"
-            )
+            return f"{numeric:+.{decimals}f}"
+        return f"{numeric:.{decimals}f}"
 
-        return (
-            f"{numeric:.{decimals}f}"
-        )
+    def _build_whale_section(self, snapshot: Dict[str, Any]) -> str:
+        whale_count = snapshot.get("whale_count", 0)
+        suspicious = snapshot.get("trade_suspicious", False)
 
-    def _build_whale_section(
-        self,
-        snapshot: Dict[
-            str,
-            Any,
-        ],
-    ) -> str:
-        whale_count = (
-            snapshot.get(
-                "whale_count",
-                0,
-            )
-        )
-
-        suspicious = (
-            snapshot.get(
-                "trade_suspicious",
-                False,
-            )
-        )
-
-        if (
-            whale_count == 0
-            and not suspicious
-        ):
+        if whale_count == 0 and not suspicious:
             return ""
 
         return f"""
@@ -225,116 +175,45 @@ WHALE INTELLIGENCE (from CLOB on-chain trades)
 
     def _build_user_prompt(
         self,
-        snapshot: Dict[
-            str,
-            Any,
-        ],
-        anomaly_result: Dict[
-            str,
-            Any,
-        ],
+        snapshot: Dict[str, Any],
+        anomaly_result: Dict[str, Any],
     ) -> str:
-        breakdown = (
-            anomaly_result.get(
-                "breakdown",
-                {},
-            )
-        )
+        breakdown = anomaly_result.get("breakdown", {})
+        volume = breakdown.get("volume_spike", {})
+        price = breakdown.get("price_anomaly", {})
+        topic = breakdown.get("topic_sensitivity", {})
 
-        volume = (
-            breakdown.get(
-                "volume_spike",
-                {},
-            )
-        )
-
-        price = (
-            breakdown.get(
-                "price_anomaly",
-                {},
-            )
-        )
-
-        topic = (
-            breakdown.get(
-                "topic_sensitivity",
-                {},
-            )
-        )
-
-        end_date = (
-            snapshot.get(
-                "end_date_iso",
-                "Unknown",
-            )
-        )
-
-        days_to_close: Any = (
-            "Unknown"
-        )
+        end_date = snapshot.get("end_date_iso", "Unknown")
+        days_to_close: Any = "Unknown"
 
         try:
-            if (
-                end_date
-                and end_date
-                != "Unknown"
-            ):
-                closes_at = (
-                    datetime.fromisoformat(
-                        str(
-                            end_date
-                        ).replace(
-                            "Z",
-                            "+00:00",
-                        )
-                    )
+            if end_date and end_date != "Unknown":
+                closes_at = datetime.fromisoformat(
+                    str(end_date).replace("Z", "+00:00")
                 )
-
                 days_to_close = (
-                    closes_at
-                    - datetime.now(
-                        timezone.utc
-                    )
+                    closes_at - datetime.now(timezone.utc)
                 ).days
-
-        except (
-            ValueError,
-            TypeError,
-        ):
+        except (ValueError, TypeError):
             pass
 
         timing_warning = ""
-
-        if isinstance(
-            days_to_close,
-            int,
-        ):
+        if isinstance(days_to_close, int):
             if days_to_close <= 0:
                 timing_warning = (
                     "\n⚠️ WARNING: This market closes TODAY "
                     "or is already closed. Apply TIME HORIZON "
                     "RULE: recommended_trade MUST be HOLD."
                 )
-
             elif days_to_close == 1:
                 timing_warning = (
                     "\n⚠️ WARNING: Market closes TOMORROW. "
                     "If flagging, set holding_period_hours <= 12."
                 )
 
-        whale_section = (
-            self._build_whale_section(
-                snapshot
-            )
-        )
+        whale_section = self._build_whale_section(snapshot)
 
-        yes_price = float(
-            snapshot.get(
-                "yes_price",
-                0.5,
-            )
-        )
-
+        yes_price = float(snapshot.get("yes_price", 0.5))
         price_warning = ""
 
         if yes_price < 0.01:
@@ -342,77 +221,43 @@ WHALE INTELLIGENCE (from CLOB on-chain trades)
                 "\n⚠️ WARNING: YES price < $0.01. "
                 "recommended_trade MUST be HOLD for BUY_NO."
             )
-
         elif yes_price > 0.99:
             price_warning = (
                 "\n⚠️ WARNING: YES price > $0.99. "
                 "recommended_trade MUST be HOLD for BUY_YES."
             )
-
-        elif (
-            yes_price < 0.03
-            or yes_price > 0.97
-        ):
+        elif yes_price < 0.03 or yes_price > 0.97:
             price_warning = (
                 "\n⚠️ WARNING: "
                 f"YES price={yes_price:.3f} is near-resolved. "
                 "Be skeptical of an actionable recommendation."
             )
 
-        price_change_text = (
-            self._format_optional_metric(
-                snapshot.get(
-                    "price_change_since_last_observation"
-                ),
-                signed=True,
-            )
+        price_change_text = self._format_optional_metric(
+            snapshot.get("price_change_since_last_observation"),
+            signed=True,
+        )
+        volume_change_text = self._format_optional_metric(
+            snapshot.get("volume_24h_change_since_last_observation"),
+            signed=True,
+            decimals=2,
+        )
+        elapsed_text = self._format_optional_metric(
+            snapshot.get("seconds_since_last_observation"),
+            decimals=1,
+        )
+        hourly_change_text = self._format_optional_metric(
+            snapshot.get("price_change_per_hour_linearized"),
+            signed=True,
         )
 
-        volume_change_text = (
-            self._format_optional_metric(
-                snapshot.get(
-                    "volume_24h_change_since_last_observation"
-                ),
-                signed=True,
-                decimals=2,
-            )
-        )
-
-        elapsed_text = (
-            self._format_optional_metric(
-                snapshot.get(
-                    "seconds_since_last_observation"
-                ),
-                decimals=1,
-            )
-        )
-
-        hourly_change_text = (
-            self._format_optional_metric(
-                snapshot.get(
-                    "price_change_per_hour_linearized"
-                ),
-                signed=True,
-            )
-        )
-
-        question = snapshot.get(
-            "question",
-            "",
-        ).lower()
-
+        question = snapshot.get("question", "").lower()
         competing_rule = ""
 
-        if (
-            "election"
-            in question
-            or "mayoral"
-            in question
-        ):
+        if "election" in question or "mayoral" in question:
             competing_rule = (
                 " Apply COMPETING CANDIDATES RULE if this is "
-                "one of multiple candidate markets for the "
-                "same election."
+                "one of multiple candidate markets for the same election."
             )
 
         whale_instruction = (
@@ -464,60 +309,30 @@ RESPOND ONLY IN JSON FORMAT"""
     ) -> str:
         markets_text = ""
 
-        for (
-            index,
-            (
+        for index, (snapshot, anomaly_result) in enumerate(items, 1):
+            markets_text += f"\n--- MARKET {index} ---\n"
+            markets_text += self._build_user_prompt(
                 snapshot,
                 anomaly_result,
-            ),
-        ) in enumerate(
-            items,
-            1,
-        ):
-            markets_text += (
-                f"\n--- MARKET {index} ---\n"
             )
-
-            markets_text += (
-                self._build_user_prompt(
-                    snapshot,
-                    anomaly_result,
-                )
-            )
-
             markets_text += "\n"
 
         election_count = sum(
             1
-            for snapshot, _
-            in items
+            for snapshot, _ in items
             if (
-                "election"
-                in snapshot.get(
-                    "question",
-                    "",
-                ).lower()
-                or "mayoral"
-                in snapshot.get(
-                    "question",
-                    "",
-                ).lower()
-                or "gubernatorial"
-                in snapshot.get(
-                    "question",
-                    "",
-                ).lower()
+                "election" in snapshot.get("question", "").lower()
+                or "mayoral" in snapshot.get("question", "").lower()
+                or "gubernatorial" in snapshot.get("question", "").lower()
             )
         )
 
         group_hint = ""
-
         if election_count > 1:
             group_hint = (
                 "\n⚠️ IMPORTANT: "
-                f"{election_count} election-related markets "
-                "detected in this batch. Apply COMPETING "
-                "CANDIDATES RULE — flag at most ONE candidate "
+                f"{election_count} election-related markets detected in this batch. "
+                "Apply COMPETING CANDIDATES RULE — flag at most ONE candidate "
                 "per election/event.\n"
             )
 
@@ -533,260 +348,83 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
         self,
         raw: str,
         expected_count: int = 1,
-        snapshots: Optional[
-            List[
-                Dict[
-                    str,
-                    Any,
-                ]
-            ]
-        ] = None,
-    ) -> Optional[
-        List[
-            Dict[
-                str,
-                Any,
-            ]
-        ]
-    ]:
+        snapshots: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[List[Dict[str, Any]]]:
         """
-        Parse the JSON response and apply existing numeric safety clamps.
+        Validate untrusted LLM output before applying local safety overrides.
 
-        Strict JSON-Schema validation belongs to the next Sprint-0 slice.
+        Invalid JSON, missing fields, wrong types, unsupported enum values,
+        unexpected fields, or incorrect batch cardinality invalidate the
+        complete LLM response.
+
+        No model-produced value is coerced before schema validation.
         """
         try:
-            parsed = json.loads(
-                raw
+            validated = parse_signal_response(
+                raw,
+                expected_count=expected_count,
             )
-
-        except json.JSONDecodeError as exc:
-            logger.error(
-                "JSON parse error: %s | raw: %s",
-                exc,
-                raw[:200],
-            )
-
+        except LLMOutputContractError as exc:
+            self.error_count += 1
+            logger.error("Invalid Mistral output: %s", exc)
             return None
 
-        if isinstance(
-            parsed,
-            dict,
-        ):
-            for key in (
-                "results",
-                "markets",
-                "analyses",
-                "analysis",
-            ):
-                if (
-                    key in parsed
-                    and isinstance(
-                        parsed[key],
-                        list,
-                    )
-                ):
-                    parsed = parsed[
-                        key
-                    ]
-                    break
-
-            else:
-                parsed = [
-                    parsed
-                ]
-
-        elif not isinstance(
-            parsed,
-            list,
-        ):
-            logger.error(
-                "Unexpected JSON type: %s",
-                type(parsed),
+        for index, item in enumerate(validated):
+            # Preserve the existing conservative confidence ceiling.
+            item["confidence_score"] = min(
+                0.95,
+                item["confidence_score"],
             )
 
-            return None
+            yes_price = None
+            if snapshots and index < len(snapshots):
+                yes_price = snapshots[index].get(
+                    "yes_price",
+                    0.5,
+                )
 
-        validated = []
-
-        for index, item in enumerate(
-            parsed
-        ):
-            if not isinstance(
-                item,
-                dict,
-            ):
+            if yes_price is None:
                 continue
 
             try:
-                if (
-                    "confidence_score"
-                    in item
-                ):
-                    item[
-                        "confidence_score"
-                    ] = max(
-                        0.0,
-                        min(
-                            0.95,
-                            float(
-                                item[
-                                    "confidence_score"
-                                ]
-                            ),
-                        ),
-                    )
-
-                if (
-                    "recommended_position_size_pct"
-                    in item
-                ):
-                    item[
-                        "recommended_position_size_pct"
-                    ] = max(
-                        0.0,
-                        min(
-                            0.15,
-                            float(
-                                item[
-                                    "recommended_position_size_pct"
-                                ]
-                            ),
-                        ),
-                    )
-
-                if (
-                    "holding_period_hours"
-                    in item
-                ):
-                    item[
-                        "holding_period_hours"
-                    ] = max(
-                        0,
-                        min(
-                            168,
-                            int(
-                                item[
-                                    "holding_period_hours"
-                                ]
-                            ),
-                        ),
-                    )
-
-            except (
-                TypeError,
-                ValueError,
-            ) as exc:
+                yes_price = float(yes_price)
+            except (TypeError, ValueError):
+                self.error_count += 1
                 logger.error(
-                    "Invalid numeric field in Mistral result: %s",
-                    exc,
+                    "Invalid yes_price for Mistral safety override: %r",
+                    yes_price,
                 )
-
                 return None
 
-            yes_price = None
+            trade = item["recommended_trade"]
 
-            if (
-                snapshots
-                and index
-                < len(snapshots)
-            ):
-                yes_price = (
-                    snapshots[index].get(
-                        "yes_price",
-                        0.5,
-                    )
+            if yes_price < 0.01 and trade == "BUY_NO":
+                logger.info(
+                    "Price override: BUY_NO -> HOLD (yes_price=%.4f)",
+                    yes_price,
+                )
+                item["recommended_trade"] = "HOLD"
+                item["recommended_position_size_pct"] = 0.0
+                item["holding_period_hours"] = 0
+                item["counter_evidence"].append(
+                    "Price override: "
+                    f"yes_price={yes_price:.4f} — "
+                    "BUY_NO payout < $0.01 per dollar"
                 )
 
-            if yes_price is not None:
-                yes_price = float(
-                    yes_price
+            elif yes_price > 0.99 and trade == "BUY_YES":
+                logger.info(
+                    "Price override: BUY_YES -> HOLD (yes_price=%.4f)",
+                    yes_price,
                 )
-
-                trade = item.get(
-                    "recommended_trade",
-                    "HOLD",
+                item["recommended_trade"] = "HOLD"
+                item["recommended_position_size_pct"] = 0.0
+                item["holding_period_hours"] = 0
+                item["counter_evidence"].append(
+                    "Price override: "
+                    f"yes_price={yes_price:.4f} — "
+                    "BUY_YES has no upside remaining"
                 )
-
-                if (
-                    yes_price
-                    < 0.01
-                    and trade
-                    == "BUY_NO"
-                ):
-                    logger.info(
-                        "🔧 Price override: BUY_NO → HOLD "
-                        "(yes_price=%.4f)",
-                        yes_price,
-                    )
-
-                    item[
-                        "recommended_trade"
-                    ] = "HOLD"
-
-                    item[
-                        "recommended_position_size_pct"
-                    ] = 0.0
-
-                    item[
-                        "holding_period_hours"
-                    ] = 0
-
-                    item.setdefault(
-                        "counter_evidence",
-                        [],
-                    ).append(
-                        "Price override: "
-                        f"yes_price={yes_price:.4f}; "
-                        "BUY_NO payout is economically minimal"
-                    )
-
-                elif (
-                    yes_price
-                    > 0.99
-                    and trade
-                    == "BUY_YES"
-                ):
-                    logger.info(
-                        "🔧 Price override: BUY_YES → HOLD "
-                        "(yes_price=%.4f)",
-                        yes_price,
-                    )
-
-                    item[
-                        "recommended_trade"
-                    ] = "HOLD"
-
-                    item[
-                        "recommended_position_size_pct"
-                    ] = 0.0
-
-                    item[
-                        "holding_period_hours"
-                    ] = 0
-
-                    item.setdefault(
-                        "counter_evidence",
-                        [],
-                    ).append(
-                        "Price override: "
-                        f"yes_price={yes_price:.4f}; "
-                        "BUY_YES has almost no upside remaining"
-                    )
-
-            validated.append(
-                item
-            )
-
-        if (
-            expected_count
-            and len(validated)
-            != expected_count
-        ):
-            logger.warning(
-                "Expected %s result(s), parsed %s",
-                expected_count,
-                len(validated),
-            )
 
         return validated
 
@@ -798,35 +436,15 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 Dict[str, Any],
             ]
         ],
-        results: List[
-            Dict[
-                str,
-                Any,
-            ]
-        ],
-    ) -> List[
-        Dict[
-            str,
-            Any,
-        ]
-    ]:
+        results: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
         """Apply the existing election-candidate post-processing guard."""
 
         def get_group_key(
-            snapshot: Dict[
-                str,
-                Any,
-            ],
+            snapshot: Dict[str, Any],
         ) -> Optional[str]:
-            question = snapshot.get(
-                "question",
-                "",
-            ).lower()
-
-            end_date = snapshot.get(
-                "end_date_iso",
-                "",
-            )
+            question = snapshot.get("question", "").lower()
+            end_date = snapshot.get("end_date_iso", "")
 
             election_markers = [
                 "mayoral",
@@ -842,10 +460,8 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             matched_marker = next(
                 (
                     marker
-                    for marker
-                    in election_markers
-                    if marker
-                    in question
+                    for marker in election_markers
+                    if marker in question
                 ),
                 None,
             )
@@ -853,142 +469,62 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             if not matched_marker:
                 return None
 
-            if isinstance(
-                end_date,
-                str,
-            ):
-                date_bucket = (
-                    end_date[:10]
-                    or "unknown"
-                )
-
+            if isinstance(end_date, str):
+                date_bucket = end_date[:10] or "unknown"
             else:
-                date_bucket = (
-                    "unknown"
-                )
+                date_bucket = "unknown"
 
-            return (
-                f"{date_bucket}::"
-                f"{matched_marker}"
-            )
+            return f"{date_bucket}::{matched_marker}"
 
-        groups: Dict[
-            str,
-            List[int],
-        ] = defaultdict(list)
+        groups: Dict[str, List[int]] = defaultdict(list)
 
-        for index, (
-            snapshot,
-            _,
-        ) in enumerate(items):
-            key = get_group_key(
-                snapshot
-            )
-
+        for index, (snapshot, _) in enumerate(items):
+            key = get_group_key(snapshot)
             if key:
-                groups[
-                    key
-                ].append(
-                    index
-                )
+                groups[key].append(index)
 
         override_indices = set()
 
-        for (
-            group_key,
-            indices,
-        ) in groups.items():
-            if (
-                len(indices)
-                <= self.MAX_SIGNALS_PER_GROUP
-            ):
+        for group_key, indices in groups.items():
+            if len(indices) <= self.MAX_SIGNALS_PER_GROUP:
                 continue
 
             flagged = [
                 index
-                for index
-                in indices
-                if results[
-                    index
-                ].get(
-                    "anomaly_detected"
+                for index in indices
+                if (
+                    results[index].get("anomaly_detected")
+                    and results[index].get("recommended_trade") != "HOLD"
                 )
-                and results[
-                    index
-                ].get(
-                    "recommended_trade"
-                )
-                != "HOLD"
             ]
 
-            if (
-                len(flagged)
-                <= self.MAX_SIGNALS_PER_GROUP
-            ):
+            if len(flagged) <= self.MAX_SIGNALS_PER_GROUP:
                 continue
 
             flagged_sorted = sorted(
                 flagged,
-                key=lambda index: results[
-                    index
-                ].get(
+                key=lambda index: results[index].get(
                     "confidence_score",
                     0,
                 ),
                 reverse=True,
             )
 
-            to_override = (
-                flagged_sorted[
-                    self.MAX_SIGNALS_PER_GROUP :
-                ]
-            )
-
-            for index in to_override:
-                override_indices.add(
-                    index
-                )
-
+            for index in flagged_sorted[self.MAX_SIGNALS_PER_GROUP :]:
+                override_indices.add(index)
                 logger.info(
                     "🔧 Group dedup override: HOLD ← %s "
                     "(group=%s, conf=%.2f)",
-                    items[
-                        index
-                    ][0].get(
-                        "question",
-                        "",
-                    )[:50],
+                    items[index][0].get("question", "")[:50],
                     group_key,
-                    results[
-                        index
-                    ].get(
-                        "confidence_score",
-                        0,
-                    ),
+                    results[index].get("confidence_score", 0),
                 )
 
         for index in override_indices:
-            results[
-                index
-            ][
-                "recommended_trade"
-            ] = "HOLD"
-
-            results[
-                index
-            ][
-                "recommended_position_size_pct"
-            ] = 0.0
-
-            results[
-                index
-            ][
-                "holding_period_hours"
-            ] = 0
-
-            results[
-                index
-            ].setdefault(
+            results[index]["recommended_trade"] = "HOLD"
+            results[index]["recommended_position_size_pct"] = 0.0
+            results[index]["holding_period_hours"] = 0
+            results[index].setdefault(
                 "counter_evidence",
                 [],
             ).append(
@@ -999,109 +535,52 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
         if override_indices:
             logger.info(
                 "📊 Group dedup: %s signals overridden to HOLD",
-                len(
-                    override_indices
-                ),
+                len(override_indices),
             )
 
         return results
 
     def _rule_based_fallback(
         self,
-        snapshot: Dict[
-            str,
-            Any,
-        ],
-        anomaly_result: Dict[
-            str,
-            Any,
-        ],
-    ) -> Dict[
-        str,
-        Any,
-    ]:
-        score = anomaly_result.get(
-            "score",
-            0,
+        snapshot: Dict[str, Any],
+        anomaly_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        score = anomaly_result.get("score", 0)
+        volume = anomaly_result.get(
+            "breakdown",
+            {},
+        ).get(
+            "volume_spike",
+            {},
         )
-
-        volume = (
-            anomaly_result.get(
-                "breakdown",
-                {},
-            ).get(
-                "volume_spike",
-                {},
-            )
+        spike_ratio = volume.get("spike_ratio", 1.0)
+        yes_price = snapshot.get("yes_price", 0.5)
+        topic = anomaly_result.get(
+            "breakdown",
+            {},
+        ).get(
+            "topic_sensitivity",
+            {},
         )
+        multiplier = topic.get("multiplier", 1.0)
 
-        spike_ratio = volume.get(
-            "spike_ratio",
-            1.0,
-        )
-
-        yes_price = snapshot.get(
-            "yes_price",
-            0.5,
-        )
-
-        topic = (
-            anomaly_result.get(
-                "breakdown",
-                {},
-            ).get(
-                "topic_sensitivity",
-                {},
-            )
-        )
-
-        multiplier = topic.get(
-            "multiplier",
-            1.0,
-        )
-
-        end_date = snapshot.get(
-            "end_date_iso",
-            "",
-        )
-
+        end_date = snapshot.get("end_date_iso", "")
         days_to_close = None
 
         try:
             if end_date:
-                closes_at = (
-                    datetime.fromisoformat(
-                        str(
-                            end_date
-                        ).replace(
-                            "Z",
-                            "+00:00",
-                        )
-                    )
+                closes_at = datetime.fromisoformat(
+                    str(end_date).replace("Z", "+00:00")
                 )
-
                 days_to_close = (
-                    closes_at
-                    - datetime.now(
-                        timezone.utc
-                    )
+                    closes_at - datetime.now(timezone.utc)
                 ).days
-
-        except (
-            ValueError,
-            TypeError,
-        ):
+        except (ValueError, TypeError):
             pass
 
-        if (
-            days_to_close
-            is not None
-            and days_to_close <= 0
-        ):
+        if days_to_close is not None and days_to_close <= 0:
             return {
-                "anomaly_detected": (
-                    spike_ratio >= 5.0
-                ),
+                "anomaly_detected": spike_ratio >= 5.0,
                 "confidence_score": 0.0,
                 "anomaly_type": (
                     "volume_spike"
@@ -1110,19 +589,15 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 ),
                 "reasoning": (
                     "Rule-based: market closes today "
-                    f"(days={days_to_close}). "
-                    "Too late to trade."
+                    f"(days={days_to_close}). Too late to trade."
                 ),
                 "recommended_trade": "HOLD",
                 "recommended_position_size_pct": 0.0,
                 "risk_level": "high",
                 "holding_period_hours": 0,
                 "supporting_evidence": (
-                    [
-                        f"Spike {spike_ratio:.1f}x"
-                    ]
-                    if spike_ratio
-                    >= 5.0
+                    [f"Spike {spike_ratio:.1f}x"]
+                    if spike_ratio >= 5.0
                     else []
                 ),
                 "counter_evidence": [
@@ -1131,18 +606,14 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 "source": "rule_based_fallback",
             }
 
-        if (
-            multiplier < 0.5
-            or score < 0.50
-        ):
+        if multiplier < 0.5 or score < 0.50:
             return {
                 "anomaly_detected": False,
                 "confidence_score": 0.0,
                 "anomaly_type": "none",
                 "reasoning": (
                     "Rule-based: "
-                    f"time_multiplier={multiplier:.2f} "
-                    "or score too low"
+                    f"time_multiplier={multiplier:.2f} or score too low"
                 ),
                 "recommended_trade": "HOLD",
                 "recommended_position_size_pct": 0.0,
@@ -1157,28 +628,15 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
 
         if yes_price < 0.01:
             trade = "HOLD"
-
         elif yes_price > 0.99:
             trade = "HOLD"
-
-        elif (
-            score >= 0.60
-            and spike_ratio >= 3.0
-        ):
-            trade = (
-                "BUY_YES"
-                if yes_price < 0.70
-                else "HOLD"
-            )
-
+        elif score >= 0.60 and spike_ratio >= 3.0:
+            trade = "BUY_YES" if yes_price < 0.70 else "HOLD"
         else:
             trade = "HOLD"
 
         confidence = (
-            min(
-                score * 0.80,
-                0.70,
-            )
+            min(score * 0.80, 0.70)
             if trade != "HOLD"
             else 0.0
         )
@@ -1190,36 +648,23 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
         )
 
         return {
-            "anomaly_detected": (
-                score >= 0.60
-            ),
-            "confidence_score": round(
-                confidence,
-                3,
-            ),
-            "anomaly_type": (
-                anomaly_type
-            ),
+            "anomaly_detected": score >= 0.60,
+            "confidence_score": round(confidence, 3),
+            "anomaly_type": anomaly_type,
             "reasoning": (
                 "Rule-based fallback: "
-                f"score={score:.2f}, "
-                f"spike={spike_ratio:.1f}x"
+                f"score={score:.2f}, spike={spike_ratio:.1f}x"
             ),
             "recommended_trade": trade,
             "recommended_position_size_pct": (
-                0.05
-                if trade != "HOLD"
-                else 0.0
+                0.05 if trade != "HOLD" else 0.0
             ),
             "risk_level": (
-                "high"
-                if score >= 0.70
-                else "medium"
+                "high" if score >= 0.70 else "medium"
             ),
             "holding_period_hours": 6,
             "supporting_evidence": [
-                "Volume spike "
-                f"{spike_ratio:.1f}x baseline"
+                f"Volume spike {spike_ratio:.1f}x baseline"
             ],
             "counter_evidence": [
                 "No LLM validation available"
@@ -1229,24 +674,13 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
 
     def analyze_single(
         self,
-        snapshot: Dict[
-            str,
-            Any,
-        ],
-        anomaly_result: Dict[
-            str,
-            Any,
-        ],
-    ) -> Dict[
-        str,
-        Any,
-    ]:
+        snapshot: Dict[str, Any],
+        anomaly_result: Dict[str, Any],
+    ) -> Dict[str, Any]:
         if not self.client:
-            return (
-                self._rule_based_fallback(
-                    snapshot,
-                    anomaly_result,
-                )
+            return self._rule_based_fallback(
+                snapshot,
+                anomaly_result,
             )
 
         if (
@@ -1257,24 +691,156 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 "Mistral call budget (%s) exhausted",
                 config.MAX_MISTRAL_CALLS_PER_CYCLE,
             )
-
-            return (
-                self._rule_based_fallback(
-                    snapshot,
-                    anomaly_result,
-                )
-            )
-
-        prompt = (
-            self._build_user_prompt(
+            return self._rule_based_fallback(
                 snapshot,
                 anomaly_result,
             )
+
+        prompt = self._build_user_prompt(
+            snapshot,
+            anomaly_result,
         )
 
         try:
-            response = (
-                self.client.chat.complete(
+            response = self.client.chat.complete(
+                model=config.MISTRAL_MODEL,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": SYSTEM_PROMPT,
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt,
+                    },
+                ],
+                response_format={
+                    "type": "json_object",
+                },
+                temperature=0.1,
+                max_tokens=512,
+            )
+
+            self.call_count += 1
+            raw = response.choices[0].message.content
+
+            results = self._parse_and_validate(
+                raw,
+                expected_count=1,
+                snapshots=[snapshot],
+            )
+
+            if not results:
+                return self._rule_based_fallback(
+                    snapshot,
+                    anomaly_result,
+                )
+
+            signal = results[0]
+            signal["source"] = "mistral"
+            signal["market_id"] = snapshot.get("id")
+            signal["question"] = snapshot.get(
+                "question",
+                "Unknown",
+            )
+            signal["timestamp"] = datetime.now(
+                timezone.utc
+            ).isoformat()
+
+            logger.info(
+                "🧠 Mistral: %s | Anomaly=%s | "
+                "Confidence=%.2f | Trade=%s",
+                snapshot.get("question", "")[:50],
+                signal.get("anomaly_detected"),
+                signal.get("confidence_score", 0),
+                signal.get("recommended_trade"),
+            )
+
+            return signal
+
+        except Exception as exc:
+            self.error_count += 1
+            logger.error(
+                "Mistral API error: %s",
+                exc,
+            )
+            return self._rule_based_fallback(
+                snapshot,
+                anomaly_result,
+            )
+
+    def analyze_batch(
+        self,
+        items: List[
+            tuple[
+                Dict[str, Any],
+                Dict[str, Any],
+            ]
+        ],
+    ) -> List[Dict[str, Any]]:
+        """Analyze multiple markets using batched prompts."""
+        if not items:
+            return []
+
+        results: List[Dict[str, Any]] = []
+        batch_size = config.MISTRAL_BATCH_SIZE
+
+        for start in range(
+            0,
+            len(items),
+            batch_size,
+        ):
+            batch = items[
+                start : start + batch_size
+            ]
+            batch_snapshots = [
+                snapshot
+                for snapshot, _ in batch
+            ]
+
+            if (
+                self.call_count
+                >= config.MAX_MISTRAL_CALLS_PER_CYCLE
+            ):
+                logger.warning(
+                    "Mistral budget exhausted, "
+                    "using fallback for remaining"
+                )
+
+                for snapshot, anomaly_result in batch:
+                    results.append(
+                        self._rule_based_fallback(
+                            snapshot,
+                            anomaly_result,
+                        )
+                    )
+                continue
+
+            if len(batch) == 1:
+                results.append(
+                    self.analyze_single(
+                        batch[0][0],
+                        batch[0][1],
+                    )
+                )
+                continue
+
+            if not self.client:
+                for snapshot, anomaly_result in batch:
+                    results.append(
+                        self._rule_based_fallback(
+                            snapshot,
+                            anomaly_result,
+                        )
+                    )
+                continue
+
+            try:
+                prompt = self._build_batch_prompt(
+                    batch
+                )
+
+                response = self.client.chat.complete(
                     model=config.MISTRAL_MODEL,
                     messages=[
                         {
@@ -1290,274 +856,37 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                         "type": "json_object",
                     },
                     temperature=0.1,
-                    max_tokens=512,
-                )
-            )
-
-            self.call_count += 1
-
-            raw = (
-                response.choices[
-                    0
-                ].message.content
-            )
-
-            results = (
-                self._parse_and_validate(
-                    raw,
-                    expected_count=1,
-                    snapshots=[
-                        snapshot
-                    ],
-                )
-            )
-
-            if not results:
-                return (
-                    self._rule_based_fallback(
-                        snapshot,
-                        anomaly_result,
-                    )
-                )
-
-            signal = results[0]
-
-            signal["source"] = (
-                "mistral"
-            )
-
-            signal["market_id"] = (
-                snapshot.get(
-                    "id"
-                )
-            )
-
-            signal["question"] = (
-                snapshot.get(
-                    "question",
-                    "Unknown",
-                )
-            )
-
-            signal["timestamp"] = (
-                datetime.now(
-                    timezone.utc
-                ).isoformat()
-            )
-
-            logger.info(
-                "🧠 Mistral: %s | Anomaly=%s | "
-                "Confidence=%.2f | Trade=%s",
-                snapshot.get(
-                    "question",
-                    "",
-                )[:50],
-                signal.get(
-                    "anomaly_detected"
-                ),
-                signal.get(
-                    "confidence_score",
-                    0,
-                ),
-                signal.get(
-                    "recommended_trade"
-                ),
-            )
-
-            return signal
-
-        except Exception as exc:
-            self.error_count += 1
-
-            logger.error(
-                "Mistral API error: %s",
-                exc,
-            )
-
-            return (
-                self._rule_based_fallback(
-                    snapshot,
-                    anomaly_result,
-                )
-            )
-
-    def analyze_batch(
-        self,
-        items: List[
-            tuple[
-                Dict[str, Any],
-                Dict[str, Any],
-            ]
-        ],
-    ) -> List[
-        Dict[
-            str,
-            Any,
-        ]
-    ]:
-        """Analyze multiple markets using batched prompts."""
-        if not items:
-            return []
-
-        results = []
-
-        batch_size = (
-            config.MISTRAL_BATCH_SIZE
-        )
-
-        for start in range(
-            0,
-            len(items),
-            batch_size,
-        ):
-            batch = items[
-                start :
-                start
-                + batch_size
-            ]
-
-            batch_snapshots = [
-                snapshot
-                for snapshot, _
-                in batch
-            ]
-
-            if (
-                self.call_count
-                >= config.MAX_MISTRAL_CALLS_PER_CYCLE
-            ):
-                logger.warning(
-                    "Mistral budget exhausted, "
-                    "using fallback for remaining"
-                )
-
-                for (
-                    snapshot,
-                    anomaly_result,
-                ) in batch:
-                    results.append(
-                        self._rule_based_fallback(
-                            snapshot,
-                            anomaly_result,
-                        )
-                    )
-
-                continue
-
-            if len(batch) == 1:
-                results.append(
-                    self.analyze_single(
-                        batch[0][0],
-                        batch[0][1],
-                    )
-                )
-
-                continue
-
-            if not self.client:
-                for (
-                    snapshot,
-                    anomaly_result,
-                ) in batch:
-                    results.append(
-                        self._rule_based_fallback(
-                            snapshot,
-                            anomaly_result,
-                        )
-                    )
-
-                continue
-
-            try:
-                prompt = (
-                    self._build_batch_prompt(
-                        batch
-                    )
-                )
-
-                response = (
-                    self.client.chat.complete(
-                        model=config.MISTRAL_MODEL,
-                        messages=[
-                            {
-                                "role": "system",
-                                "content": SYSTEM_PROMPT,
-                            },
-                            {
-                                "role": "user",
-                                "content": prompt,
-                            },
-                        ],
-                        response_format={
-                            "type": "json_object",
-                        },
-                        temperature=0.1,
-                        max_tokens=1024,
-                    )
+                    max_tokens=1024,
                 )
 
                 self.call_count += 1
+                raw = response.choices[0].message.content
 
-                raw = (
-                    response.choices[
-                        0
-                    ].message.content
-                )
-
-                parsed = (
-                    self._parse_and_validate(
-                        raw,
-                        expected_count=len(
-                            batch
-                        ),
-                        snapshots=(
-                            batch_snapshots
-                        ),
-                    )
+                parsed = self._parse_and_validate(
+                    raw,
+                    expected_count=len(batch),
+                    snapshots=batch_snapshots,
                 )
 
                 if (
                     parsed
-                    and len(parsed)
-                    == len(batch)
+                    and len(parsed) == len(batch)
                 ):
-                    for (
-                        index,
-                        signal,
-                    ) in enumerate(
+                    for index, signal in enumerate(
                         parsed
                     ):
-                        snapshot = (
-                            batch[
-                                index
-                            ][0]
-                        )
-
-                        signal[
-                            "source"
-                        ] = "mistral_batch"
-
-                        signal[
-                            "market_id"
-                        ] = snapshot.get(
+                        snapshot = batch[index][0]
+                        signal["source"] = "mistral_batch"
+                        signal["market_id"] = snapshot.get(
                             "id"
                         )
-
-                        signal[
-                            "question"
-                        ] = snapshot.get(
+                        signal["question"] = snapshot.get(
                             "question"
                         )
-
-                        signal[
-                            "timestamp"
-                        ] = datetime.now(
+                        signal["timestamp"] = datetime.now(
                             timezone.utc
                         ).isoformat()
-
-                        results.append(
-                            signal
-                        )
+                        results.append(signal)
 
                     logger.info(
                         "🧠 Mistral batch: %s markets "
@@ -1570,10 +899,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                         "Batch parse mismatch, falling back"
                     )
 
-                    for (
-                        snapshot,
-                        anomaly_result,
-                    ) in batch:
+                    for snapshot, anomaly_result in batch:
                         results.append(
                             self._rule_based_fallback(
                                 snapshot,
@@ -1583,16 +909,12 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
 
             except Exception as exc:
                 self.error_count += 1
-
                 logger.error(
                     "Batch Mistral error: %s",
                     exc,
                 )
 
-                for (
-                    snapshot,
-                    anomaly_result,
-                ) in batch:
+                for snapshot, anomaly_result in batch:
                     results.append(
                         self._rule_based_fallback(
                             snapshot,
@@ -1601,17 +923,13 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                     )
 
         if results:
-            results = (
-                self._apply_group_dedup(
-                    items,
-                    results,
-                )
+            results = self._apply_group_dedup(
+                items,
+                results,
             )
 
         return results
 
-    def reset_cycle_counters(
-        self,
-    ):
+    def reset_cycle_counters(self):
         self.call_count = 0
         self.error_count = 0

@@ -1,0 +1,1 @@
+{"anomaly_detected": true, "confidence_score": 0.86,
