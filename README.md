@@ -90,7 +90,7 @@ The repository is structured as an engineering and evaluation project rather tha
 
 ### 1. Market ingestion
 
-`src/data_fetcher.py` retrieves and normalizes market data from the Polymarket Gamma API.
+`src/data_fetcher.py` retrieves and normalizes market data from the Polymarket Gamma API using cursor-based keyset pagination.
 
 Current filters include:
 
@@ -453,8 +453,9 @@ The repository also contains a dashboard screenshot in `docs/dashboard.png`.
 ```text
 PolyAugur/
 ├── .github/
-│   └── workflows/
-│       └── ci.yml
+│   ├── workflows/
+│   │   └── ci.yml
+│   └── dependabot.yml
 ├── docs/
 │   ├── dashboard.png
 │   └── EVALUATION.md
@@ -481,6 +482,8 @@ PolyAugur/
 │   ├── fixtures/
 │   ├── test_data_fetcher_fixtures.py
 │   ├── test_evaluation.py
+│   ├── test_evaluation_cli.py
+│   ├── test_health_preflight.py
 │   ├── test_llm_contract.py
 │   ├── test_mistral_contract_integration.py
 │   ├── test_runtime_smoke.py
@@ -539,8 +542,8 @@ PolyAugur produces research signals and reports only. It does not submit trades.
 3. **LLM confidence is uncalibrated.**  
    Scores are treated as model outputs rather than probabilities.
 
-4. **The current Gamma full-market scanner still uses offset pagination.**  
-   A real large scan has previously failed at a higher offset. Migrating to Gamma's cursor/keyset pagination is the next reliability improvement before claiming robust full-market coverage.
+4. **Full-market coverage is capped and depends on the external Gamma API.**  
+   The scanner uses cursor/keyset pagination and fails closed on page errors or cursor loops. `MAX_PAGES` still caps each scan, and reaching the cap is reported as `truncated=true`.
 
 5. **The volume baseline is a proxy.**  
    `all-time volume / market age` is not equivalent to a historical rolling baseline.

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import sys
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -34,14 +35,10 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
         try:
             value = json.loads(stripped)
         except json.JSONDecodeError as exc:
-            raise EvaluationError(
-                f"{path}:{line_number}: invalid JSON: {exc.msg}"
-            ) from exc
+            raise EvaluationError(f"{path}:{line_number}: invalid JSON: {exc.msg}") from exc
 
         if not isinstance(value, dict):
-            raise EvaluationError(
-                f"{path}:{line_number}: each JSONL record must be an object"
-            )
+            raise EvaluationError(f"{path}:{line_number}: each JSONL record must be an object")
 
         records.append(value)
 
@@ -61,9 +58,7 @@ def _index_unique(
     for index, record in enumerate(records, 1):
         case_id = record.get("case_id")
         if not isinstance(case_id, str) or not case_id.strip():
-            raise EvaluationError(
-                f"{kind} record {index}: case_id must be a non-empty string"
-            )
+            raise EvaluationError(f"{kind} record {index}: case_id must be a non-empty string")
 
         if case_id in indexed:
             raise EvaluationError(f"duplicate {kind} case_id: {case_id}")
@@ -90,17 +85,13 @@ def _validate_prediction(
     confidence_score = record.get("confidence_score")
 
     if type(anomaly_detected) is not bool:
-        raise EvaluationError(
-            f"prediction {case_id}: anomaly_detected must be boolean"
-        )
+        raise EvaluationError(f"prediction {case_id}: anomaly_detected must be boolean")
 
     if isinstance(confidence_score, bool) or not isinstance(
         confidence_score,
         (int, float),
     ):
-        raise EvaluationError(
-            f"prediction {case_id}: confidence_score must be numeric"
-        )
+        raise EvaluationError(f"prediction {case_id}: confidence_score must be numeric")
 
     confidence = float(confidence_score)
 
@@ -114,9 +105,7 @@ def _validate_prediction(
         if value is None:
             continue
         if type(value) is not int or value < 0:
-            raise EvaluationError(
-                f"prediction {case_id}: {field} must be a non-negative integer"
-            )
+            raise EvaluationError(f"prediction {case_id}: {field} must be a non-negative integer")
 
     return anomaly_detected, confidence
 
@@ -192,21 +181,10 @@ def _cost_report(
     input_tokens = [record.get("input_tokens") for record in prediction_records]
     output_tokens = [record.get("output_tokens") for record in prediction_records]
 
-    token_counts_complete = all(
-        type(value) is int
-        for value in [*input_tokens, *output_tokens]
-    )
+    token_counts_complete = all(type(value) is int for value in [*input_tokens, *output_tokens])
 
-    total_input_tokens = (
-        sum(input_tokens)
-        if token_counts_complete
-        else None
-    )
-    total_output_tokens = (
-        sum(output_tokens)
-        if token_counts_complete
-        else None
-    )
+    total_input_tokens = sum(input_tokens) if token_counts_complete else None
+    total_output_tokens = sum(output_tokens) if token_counts_complete else None
 
     report: dict[str, Any] = {
         "status": "not_measured",
@@ -311,8 +289,7 @@ def evaluate(
 
     accuracy = (tp + tn) / len(labels_binary)
     brier_score = sum(
-        (confidence - float(label)) ** 2
-        for confidence, label in zip(confidences, labels_binary)
+        (confidence - float(label)) ** 2 for confidence, label in zip(confidences, labels_binary)
     ) / len(labels_binary)
 
     calibration_table, ece = _calibration_bins(
@@ -327,8 +304,7 @@ def evaluate(
             "positive_labels": sum(labels_binary),
             "negative_labels": len(labels_binary) - sum(labels_binary),
             "decision_rule": (
-                "positive iff anomaly_detected=true and "
-                f"confidence_score>={threshold:.2f}"
+                f"positive iff anomaly_detected=true and confidence_score>={threshold:.2f}"
             ),
             "target": "manual review escalation according to benchmark rubric",
         },
@@ -412,6 +388,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    import sys
-
     raise SystemExit(main())

@@ -1,0 +1,17 @@
+# Deny everything by default.
+*
+
+# Files required by the runtime image.
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!config.py
+!run.py
+
+# Application source.
+!src/
+!src/**
+
+# Runtime schemas.
+!schemas/
+!schemas/**

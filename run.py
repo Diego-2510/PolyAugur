@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
-"""
-PolyAugur Production Runner v1.0
-Usage:
-    python run.py              # Continuous polling
-    python run.py --once       # Single cycle
-    python run.py --cycles 5   # Run 5 cycles
-    python run.py --check      # Check outcomes only
-    python run.py --stats      # Show DB stats
-    python run.py --health     # Run pre-flight check only
+"""PolyAugur command-line runtime."""
 
-Author: Diego Ringleb | Phase 10 | 2026-02-28
-"""
+from __future__ import annotations
 
 import argparse
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 
 import config
 
 
-def setup_logging():
+def setup_logging() -> None:
     os.makedirs("logs", exist_ok=True)
     date_str = datetime.now().strftime("%Y-%m-%d")
     handlers = [
@@ -35,143 +27,127 @@ def setup_logging():
     )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="PolyAugur v1.0")
-    parser.add_argument("--once", action="store_true", help="Single detection cycle")
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="PolyAugur")
+    parser.add_argument("--once", action="store_true", help="Run one detection cycle")
     parser.add_argument("--cycles", type=int, default=None, help="Run N cycles")
     parser.add_argument("--interval", type=int, default=None, help="Override poll interval")
     parser.add_argument("--check", action="store_true", help="Check outcomes only")
-    parser.add_argument("--stats", action="store_true", help="Show DB stats and exit")
-    parser.add_argument("--health", action="store_true", help="Pre-flight check only")
-    parser.add_argument("--skip-preflight", action="store_true", help="Skip pre-flight check")
-    args = parser.parse_args()
+    parser.add_argument("--stats", action="store_true", help="Show database statistics")
+    parser.add_argument("--health", action="store_true", help="Run pre-flight checks only")
+    parser.add_argument("--skip-preflight", action="store_true", help="Skip pre-flight checks")
+    return parser
 
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     setup_logging()
     logger = logging.getLogger("polyaugur")
 
-    if args.interval:
+    if args.interval is not None:
+        if args.interval <= 0:
+            logger.error("--interval must be greater than zero")
+            return 2
         config.POLL_INTERVAL_SEC = args.interval
 
-    # Health check mode
     if args.health:
         from src.health import main as health_main
 
-        health_main()
-        return
+        return health_main()
 
-    # Stats mode
     if args.stats:
         from src.signal_store import SignalStore
 
         store = SignalStore(config.SIGNAL_DB_PATH)
         stats = store.get_stats()
-        print("\n📊 PolyAugur Signal Stats")
+        print("\nPolyAugur signal stats")
         print("=" * 40)
-        for k, v in stats.items():
-            print(f"   {k:20s}: {v}")
-        recent = store.get_recent(hours=24)
-        if recent:
-            print(f"\n📋 Last 24h signals ({len(recent)}):")
-            for s in recent[:10]:
-                whale = "🐋" if s.get("trade_suspicious") else "  "
-                print(
-                    f"   {whale} {s.get('question', '')[:50]} | "
-                    f"{s.get('trade')} | {s.get('confidence', 0):.0%} | "
-                    f"{s.get('outcome', 'pending')}"
-                )
-        return
+        for key, value in stats.items():
+            print(f"   {key:20s}: {value}")
+        return 0
 
-    # Check outcomes mode
     if args.check:
-        from src.signal_store import SignalStore
         from src.performance_tracker import PerformanceTracker
+        from src.signal_store import SignalStore
 
         store = SignalStore(config.SIGNAL_DB_PATH)
-        tracker = PerformanceTracker(store)
-        summary = tracker.check_outcomes()
-        print(f"\n📊 Outcome Check: {summary}")
-        return
+        summary = PerformanceTracker(store).check_outcomes()
+        print(f"\nOutcome check: {summary}")
+        return 0
 
-    # ── Pre-flight check ─────────────────────────────────────────────
     if not args.skip_preflight:
-        from src.health import HealthMonitor
+        from src.health import HealthMonitor, _format_result
 
-        monitor = HealthMonitor()
-        results = monitor.preflight_check()
+        results = HealthMonitor().preflight_check()
+        logger.info("Pre-flight check:")
+        for name, value in results.items():
+            logger.info("   %s: %s", name, _format_result(name, value))
 
-        logger.info("🏥 Pre-flight check:")
-        critical_fail = False
-        for check, passed in results.items():
-            emoji = "✅" if passed else "❌"
-            logger.info(f"   {emoji} {check}: {'OK' if passed else 'FAIL'}")
-            if not passed and check in ("mistral_key", "gamma_api", "db_writable"):
-                critical_fail = True
+        critical = {"gamma_api", "db_writable"}
+        if config.TRADE_ANALYSIS_ENABLED:
+            critical.add("clob_api")
+        failed = [name for name in critical if results.get(name) is not True]
+        if failed:
+            logger.error("Critical pre-flight checks failed: %s", ", ".join(sorted(failed)))
+            return 1
 
-        if critical_fail:
-            logger.error("⛔ Critical pre-flight check failed. Fix issues or use --skip-preflight")
-            sys.exit(1)
-
-    # ── Normal run ───────────────────────────────────────────────────
     logger.info("=" * 60)
-    logger.info("🚀 PolyAugur v1.0 — Insider Signal Detection")
-    logger.info(f"   Poll interval:  {config.POLL_INTERVAL_SEC}s")
-    logger.info(f"   Mistral:        {config.MISTRAL_MODEL}")
-    logger.info(f"   DB:             {config.SIGNAL_DB_PATH}")
-    logger.info(f"   Telegram:       {'✅' if config.TELEGRAM_BOT_TOKEN else '❌'}")
-    logger.info(f"   CLOB analysis:  {'✅' if config.TRADE_ANALYSIS_ENABLED else '❌'}")
-    logger.info(f"   Markets:        {config.MAX_PAGES * config.MARKETS_PER_PAGE} max")
+    logger.info("PolyAugur — prediction-market anomaly detection research system")
+    logger.info("Poll interval: %ss", config.POLL_INTERVAL_SEC)
+    logger.info(
+        "LLM-assisted review: %s", "configured" if config.MISTRAL_API_KEY else "fallback only"
+    )
+    logger.info("DB: %s", config.SIGNAL_DB_PATH)
+    logger.info("Telegram: %s", "configured" if config.TELEGRAM_BOT_TOKEN else "disabled")
+    logger.info("CLOB analysis: %s", "enabled" if config.TRADE_ANALYSIS_ENABLED else "disabled")
+    logger.info("Market scan cap: %s", config.MAX_PAGES * config.MARKETS_PER_PAGE)
     logger.info("=" * 60)
 
-    from src.orchestrator import Orchestrator
     from src.health import HealthMonitor
+    from src.orchestrator import Orchestrator
 
-    orch = Orchestrator()
+    orchestrator = Orchestrator()
     health = HealthMonitor()
 
     if args.once:
         try:
-            summary = orch.run_cycle()
+            summary = orchestrator.run_cycle()
             health.record_cycle(summary)
             logger.info(
-                f"Done: {summary.get('signal_count', 0)} signals in {summary.get('cycle_time_sec', 0)}s"
+                "Done: %s signals in %ss",
+                summary.get("signal_count", 0),
+                summary.get("cycle_time_sec", 0),
             )
-        except Exception as e:
-            health.record_error(str(e))
-            logger.error(f"Cycle failed: {e}", exc_info=True)
-    else:
-        # Main loop with health monitoring
-        cycle = 0
-        while True:
-            try:
-                summary = orch.run_cycle()
-                health.record_cycle(summary)
-                cycle += 1
+            return 0
+        except Exception as exc:
+            health.record_error(str(exc))
+            logger.error("Cycle failed: %s", exc, exc_info=True)
+            return 1
 
-                # Health ping
-                if health.should_send_ping():
-                    health.send_health_ping()
+    cycle = 0
+    while True:
+        try:
+            summary = orchestrator.run_cycle()
+            health.record_cycle(summary)
+            cycle += 1
 
-                if args.cycles and cycle >= args.cycles:
-                    logger.info(f"Max cycles ({args.cycles}) reached")
-                    health.send_health_ping()
-                    break
-
-                logger.info(f"💤 Sleeping {config.POLL_INTERVAL_SEC}s...")
-                import time
-
-                time.sleep(config.POLL_INTERVAL_SEC)
-
-            except KeyboardInterrupt:
-                logger.info("⛔ Stopped by user")
+            if health.should_send_ping():
                 health.send_health_ping()
-                break
-            except Exception as e:
-                health.record_error(str(e))
-                logger.error(f"Cycle error: {e}", exc_info=True)
-                import time
 
-                time.sleep(5)
+            if args.cycles and cycle >= args.cycles:
+                logger.info("Max cycles (%s) reached", args.cycles)
+                return 0
+
+            logger.info("Sleeping %ss...", config.POLL_INTERVAL_SEC)
+            time.sleep(config.POLL_INTERVAL_SEC)
+        except KeyboardInterrupt:
+            logger.info("Stopped by user")
+            return 0
+        except Exception as exc:
+            health.record_error(str(exc))
+            logger.error("Cycle error: %s", exc, exc_info=True)
+            time.sleep(5)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
