@@ -122,35 +122,32 @@ class SignalStore:
             conn.commit()
 
     def is_duplicate(self, market_id: str) -> bool:
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=self.DEDUP_WINDOW_HOURS)
-        ).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=self.DEDUP_WINDOW_HOURS)).isoformat()
         with self._get_conn() as conn:
             row = conn.execute(
                 "SELECT COUNT(*) as cnt FROM signals WHERE market_id = ? AND detected_at >= ?",
-                (market_id, cutoff)
+                (market_id, cutoff),
             ).fetchone()
-        return row['cnt'] > 0
+        return row["cnt"] > 0
 
     def save(self, signal: Dict[str, Any]) -> int:
         import json
 
-        spike_ratio = (
-            signal.get('spike_ratio') or
-            signal.get('breakdown', {}).get('volume_spike', {}).get('spike_ratio', 1.0)
-        )
+        spike_ratio = signal.get("spike_ratio") or signal.get("breakdown", {}).get(
+            "volume_spike", {}
+        ).get("spike_ratio", 1.0)
 
-        days_to_close = signal.get('days_to_close')
+        days_to_close = signal.get("days_to_close")
         if days_to_close is None:
-            end_date = signal.get('end_date_iso')
+            end_date = signal.get("end_date_iso")
             try:
                 if end_date:
-                    closes = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
+                    closes = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
                     days_to_close = (closes - datetime.now(timezone.utc)).days
             except Exception:
                 pass
 
-        suspicious_reasons = signal.get('suspicious_reasons', [])
+        suspicious_reasons = signal.get("suspicious_reasons", [])
         if isinstance(suspicious_reasons, list):
             suspicious_reasons = json.dumps(suspicious_reasons)
 
@@ -173,36 +170,36 @@ class SignalStore:
                 )
                 """,
                 (
-                    signal.get('market_id', ''),
-                    signal.get('question', ''),
-                    signal.get('recommended_trade', 'HOLD'),
-                    signal.get('confidence_score', 0.0),
-                    signal.get('confidence_raw', signal.get('confidence_score', 0.0)),
-                    signal.get('confidence_boost', 0.0),
-                    signal.get('score', signal.get('anomaly_score', 0.0)),
-                    signal.get('anomaly_type', 'unknown'),
-                    signal.get('risk_level', 'medium'),
-                    signal.get('yes_price', 0.5),
-                    signal.get('volume_24hr', 0.0),
+                    signal.get("market_id", ""),
+                    signal.get("question", ""),
+                    signal.get("recommended_trade", "HOLD"),
+                    signal.get("confidence_score", 0.0),
+                    signal.get("confidence_raw", signal.get("confidence_score", 0.0)),
+                    signal.get("confidence_boost", 0.0),
+                    signal.get("score", signal.get("anomaly_score", 0.0)),
+                    signal.get("anomaly_type", "unknown"),
+                    signal.get("risk_level", "medium"),
+                    signal.get("yes_price", 0.5),
+                    signal.get("volume_24hr", 0.0),
                     spike_ratio,
                     days_to_close,
-                    signal.get('holding_period_hours', 0),
-                    signal.get('recommended_position_size_pct', 0.0),
-                    signal.get('reasoning', ''),
-                    signal.get('cycle', 0),
-                    signal.get('detected_at', datetime.now(timezone.utc).isoformat()),
-                    signal.get('source', 'unknown'),
+                    signal.get("holding_period_hours", 0),
+                    signal.get("recommended_position_size_pct", 0.0),
+                    signal.get("reasoning", ""),
+                    signal.get("cycle", 0),
+                    signal.get("detected_at", datetime.now(timezone.utc).isoformat()),
+                    signal.get("source", "unknown"),
                     # Trade analysis
-                    signal.get('whale_count', 0),
-                    signal.get('whale_volume_pct', 0),
-                    signal.get('top_wallet_pct', 0),
-                    signal.get('unique_wallets', 0),
-                    signal.get('directional_bias', 0.5),
-                    signal.get('dominant_side', 'NONE'),
-                    signal.get('burst_score', 1.0),
-                    1 if signal.get('trade_suspicious') else 0,
+                    signal.get("whale_count", 0),
+                    signal.get("whale_volume_pct", 0),
+                    signal.get("top_wallet_pct", 0),
+                    signal.get("unique_wallets", 0),
+                    signal.get("directional_bias", 0.5),
+                    signal.get("dominant_side", "NONE"),
+                    signal.get("burst_score", 1.0),
+                    1 if signal.get("trade_suspicious") else 0,
                     suspicious_reasons,
-                )
+                ),
             )
             row_id = cursor.lastrowid
             conn.commit()
@@ -214,7 +211,7 @@ class SignalStore:
         with self._get_conn() as conn:
             conn.execute(
                 "UPDATE signals SET sent_telegram = 1, telegram_sent_at = ? WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), row_id)
+                (datetime.now(timezone.utc).isoformat(), row_id),
             )
             conn.commit()
 
@@ -228,8 +225,7 @@ class SignalStore:
                     outcome_checked_at = ?
                 WHERE id = ?
                 """,
-                (outcome, outcome_price, pnl_pct,
-                 datetime.now(timezone.utc).isoformat(), row_id)
+                (outcome, outcome_price, pnl_pct, datetime.now(timezone.utc).isoformat(), row_id),
             )
             conn.commit()
 
@@ -248,44 +244,40 @@ class SignalStore:
         return [dict(r) for r in rows]
 
     def get_recent(self, hours: int = 24) -> List[Dict[str, Any]]:
-        cutoff = (
-            datetime.now(timezone.utc) - timedelta(hours=hours)
-        ).isoformat()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
         with self._get_conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM signals WHERE detected_at >= ? ORDER BY detected_at DESC",
-                (cutoff,)
+                "SELECT * FROM signals WHERE detected_at >= ? ORDER BY detected_at DESC", (cutoff,)
             ).fetchall()
         return [dict(r) for r in rows]
 
     def get_stats(self) -> Dict[str, Any]:
         with self._get_conn() as conn:
-            total = conn.execute("SELECT COUNT(*) as n FROM signals").fetchone()['n']
+            total = conn.execute("SELECT COUNT(*) as n FROM signals").fetchone()["n"]
             today_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
             today = conn.execute(
-                "SELECT COUNT(*) as n FROM signals WHERE detected_at >= ?",
-                (today_cutoff,)
-            ).fetchone()['n']
+                "SELECT COUNT(*) as n FROM signals WHERE detected_at >= ?", (today_cutoff,)
+            ).fetchone()["n"]
             unsent = conn.execute(
                 "SELECT COUNT(*) as n FROM signals WHERE sent_telegram = 0"
-            ).fetchone()['n']
+            ).fetchone()["n"]
             whale_count = conn.execute(
                 "SELECT COUNT(*) as n FROM signals WHERE trade_suspicious = 1"
-            ).fetchone()['n']
+            ).fetchone()["n"]
             wins = conn.execute(
                 "SELECT COUNT(*) as n FROM signals WHERE outcome = 'win'"
-            ).fetchone()['n']
+            ).fetchone()["n"]
             losses = conn.execute(
                 "SELECT COUNT(*) as n FROM signals WHERE outcome = 'loss'"
-            ).fetchone()['n']
+            ).fetchone()["n"]
             resolved = wins + losses
 
         return {
-            'total_signals': total,
-            'signals_24h': today,
-            'telegram_unsent': unsent,
-            'whale_signals': whale_count,
-            'wins': wins,
-            'losses': losses,
-            'win_rate': round(wins / resolved, 3) if resolved > 0 else None,
+            "total_signals": total,
+            "signals_24h": today,
+            "telegram_unsent": unsent,
+            "whale_signals": whale_count,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / resolved, 3) if resolved > 0 else None,
         }

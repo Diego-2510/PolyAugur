@@ -30,9 +30,7 @@ def _safe_float(
 
     try:
         if isinstance(value, str):
-            return float(
-                value.replace(",", "")
-            )
+            return float(value.replace(",", ""))
 
         return float(value)
 
@@ -137,13 +135,8 @@ class PolymarketFetcher:
         self,
         retry_count: int,
     ) -> float:
-        if (
-            retry_count
-            < len(config.BACKOFF_DELAYS)
-        ):
-            return config.BACKOFF_DELAYS[
-                retry_count
-            ]
+        if retry_count < len(config.BACKOFF_DELAYS):
+            return config.BACKOFF_DELAYS[retry_count]
 
         return 5.0
 
@@ -164,9 +157,7 @@ class PolymarketFetcher:
 
         params = params or {}
 
-        for retry in range(
-            max_retries
-        ):
+        for retry in range(max_retries):
             try:
                 response = self.session.get(
                     url,
@@ -174,13 +165,8 @@ class PolymarketFetcher:
                     timeout=15,
                 )
 
-                if (
-                    response.status_code
-                    == 429
-                ):
-                    delay = self._backoff(
-                        retry
-                    )
+                if response.status_code == 429:
+                    delay = self._backoff(retry)
 
                     logger.warning(
                         "Rate limit on %s, backoff %.1fs",
@@ -188,23 +174,15 @@ class PolymarketFetcher:
                         delay,
                     )
 
-                    if (
-                        retry
-                        < max_retries - 1
-                    ):
-                        time.sleep(
-                            delay
-                        )
+                    if retry < max_retries - 1:
+                        time.sleep(delay)
 
                     continue
 
-                if (
-                    response.status_code
-                    in (
-                        400,
-                        404,
-                        422,
-                    )
+                if response.status_code in (
+                    400,
+                    404,
+                    422,
                 ):
                     logger.debug(
                         "HTTP %s: %s → %s",
@@ -221,22 +199,14 @@ class PolymarketFetcher:
 
             except requests.exceptions.Timeout:
                 logger.warning(
-                    "Timeout on %s "
-                    "(retry %s/%s)",
+                    "Timeout on %s (retry %s/%s)",
                     endpoint,
                     retry + 1,
                     max_retries,
                 )
 
-                if (
-                    retry
-                    < max_retries - 1
-                ):
-                    time.sleep(
-                        self._backoff(
-                            retry
-                        )
-                    )
+                if retry < max_retries - 1:
+                    time.sleep(self._backoff(retry))
 
             except requests.exceptions.RequestException as exc:
                 logger.error(
@@ -245,15 +215,8 @@ class PolymarketFetcher:
                     exc,
                 )
 
-                if (
-                    retry
-                    < max_retries - 1
-                ):
-                    time.sleep(
-                        self._backoff(
-                            retry
-                        )
-                    )
+                if retry < max_retries - 1:
+                    time.sleep(self._backoff(retry))
 
         logger.error(
             "Max retries exceeded for %s",
@@ -270,9 +233,7 @@ class PolymarketFetcher:
         ],
     ) -> bool:
         """Return whether the market has not expired."""
-        now = datetime.now(
-            timezone.utc
-        )
+        now = datetime.now(timezone.utc)
 
         end_date_str = None
 
@@ -283,9 +244,7 @@ class PolymarketFetcher:
             "end_date",
         ):
             if market.get(field):
-                end_date_str = (
-                    market[field]
-                )
+                end_date_str = market[field]
                 break
 
         if not end_date_str:
@@ -293,9 +252,7 @@ class PolymarketFetcher:
 
         try:
             closes_at = datetime.fromisoformat(
-                str(
-                    end_date_str
-                ).replace(
+                str(end_date_str).replace(
                     "Z",
                     "+00:00",
                 )
@@ -342,35 +299,20 @@ class PolymarketFetcher:
                 tag,
                 str,
             ):
-                tag_labels.append(
-                    tag.lower()
-                )
+                tag_labels.append(tag.lower())
 
         question = market.get(
             "question",
             "",
         ).lower()
 
-        if any(
-            keyword in label
-            for label in tag_labels
-            for keyword in self._sport_keywords
-        ):
+        if any(keyword in label for label in tag_labels for keyword in self._sport_keywords):
             return True
 
-        if any(
-            keyword in question
-            for keyword in self._sport_keywords
-        ):
+        if any(keyword in question for keyword in self._sport_keywords):
             return True
 
-        if any(
-            pattern.search(
-                question
-            )
-            for pattern
-            in self._sport_patterns
-        ):
+        if any(pattern.search(question) for pattern in self._sport_patterns):
             return True
 
         return False
@@ -390,34 +332,18 @@ class PolymarketFetcher:
         """Normalize raw API data to consistent field names."""
         try:
             volume = _safe_float(
-                market.get(
-                    "volume_24hr"
-                )
-                or market.get(
-                    "volume24hr"
-                )
-                or market.get(
-                    "volume24Hrs"
-                )
-                or market.get(
-                    "volumeNum"
-                ),
+                market.get("volume_24hr")
+                or market.get("volume24hr")
+                or market.get("volume24Hrs")
+                or market.get("volumeNum"),
                 default=0.0,
             )
 
             end_date = (
-                market.get(
-                    "end_date_iso"
-                )
-                or market.get(
-                    "endDate"
-                )
-                or market.get(
-                    "closesAt"
-                )
-                or market.get(
-                    "end_date"
-                )
+                market.get("end_date_iso")
+                or market.get("endDate")
+                or market.get("closesAt")
+                or market.get("end_date")
             )
 
             return {
@@ -462,10 +388,7 @@ class PolymarketFetcher:
         A failed or structurally invalid page invalidates the current scan,
         because continuing at a later offset would create a silent data gap.
         """
-        max_pages = (
-            max_pages
-            or config.MAX_PAGES
-        )
+        max_pages = max_pages or config.MAX_PAGES
 
         all_markets: List[
             Dict[
@@ -486,10 +409,7 @@ class PolymarketFetcher:
 
         fetch_start = time.time()
 
-        total_possible = (
-            max_pages
-            * config.MARKETS_PER_PAGE
-        )
+        total_possible = max_pages * config.MARKETS_PER_PAGE
 
         logger.info(
             "Paginated fetch: max %s pages x %s = %s markets",
@@ -498,35 +418,25 @@ class PolymarketFetcher:
             f"{total_possible:,}",
         )
 
-        while (
-            pages_fetched
-            < max_pages
-        ):
+        while pages_fetched < max_pages:
             data = self._api_get(
                 config.GAMMA_API_BASE,
                 "markets",
                 {
                     "active": "true",
                     "closed": "false",
-                    "limit": str(
-                        config.MARKETS_PER_PAGE
-                    ),
-                    "offset": str(
-                        offset
-                    ),
+                    "limit": str(config.MARKETS_PER_PAGE),
+                    "offset": str(offset),
                 },
             )
 
             if data is None:
                 incomplete = True
                 stopped_at_offset = offset
-                stopped_reason = (
-                    "request_failed"
-                )
+                stopped_reason = "request_failed"
 
                 logger.error(
-                    "Market pagination failed at offset %s; "
-                    "discarding partial scan to avoid gaps",
+                    "Market pagination failed at offset %s; discarding partial scan to avoid gaps",
                     offset,
                 )
 
@@ -538,13 +448,10 @@ class PolymarketFetcher:
             ):
                 incomplete = True
                 stopped_at_offset = offset
-                stopped_reason = (
-                    "unexpected_response_type"
-                )
+                stopped_reason = "unexpected_response_type"
 
                 logger.error(
-                    "Unexpected Gamma response type at offset %s: %s; "
-                    "discarding partial scan",
+                    "Unexpected Gamma response type at offset %s: %s; discarding partial scan",
                     offset,
                     type(data).__name__,
                 )
@@ -553,82 +460,46 @@ class PolymarketFetcher:
 
             if not data:
                 logger.info(
-                    "Empty market page at offset %s; "
-                    "pagination complete",
+                    "Empty market page at offset %s; pagination complete",
                     offset,
                 )
 
                 break
 
             for raw in data:
-                normalized = (
-                    self._normalize_market(
-                        raw
-                    )
-                )
+                normalized = self._normalize_market(raw)
 
-                if (
-                    normalized
-                    is None
-                ):
+                if normalized is None:
                     continue
 
-                market_id = (
-                    normalized.get(
-                        "id"
-                    )
-                )
+                market_id = normalized.get("id")
 
                 if market_id is None:
                     logger.warning(
-                        "Skipping market without id "
-                        "at offset %s",
+                        "Skipping market without id at offset %s",
                         offset,
                     )
                     continue
 
-                if (
-                    market_id
-                    in seen_ids
-                ):
+                if market_id in seen_ids:
                     duplicates += 1
                     continue
 
-                seen_ids.add(
-                    market_id
-                )
+                seen_ids.add(market_id)
 
-                all_markets.append(
-                    normalized
-                )
+                all_markets.append(normalized)
 
             pages_fetched += 1
 
-            is_last_page = (
-                len(data)
-                < config.MARKETS_PER_PAGE
-            )
+            is_last_page = len(data) < config.MARKETS_PER_PAGE
 
-            if (
-                pages_fetched % 10 == 0
-                or is_last_page
-                or pages_fetched == 1
-            ):
-                elapsed = (
-                    time.time()
-                    - fetch_start
-                )
+            if pages_fetched % 10 == 0 or is_last_page or pages_fetched == 1:
+                elapsed = time.time() - fetch_start
 
-                rate = (
-                    len(all_markets)
-                    / elapsed
-                    if elapsed > 0
-                    else 0
-                )
+                rate = len(all_markets) / elapsed if elapsed > 0 else 0
 
                 logger.info(
-                    "Page %s/%s: %s markets fetched "
-                    "(%.0fs, %.0f mkts/s)",
+                    "Page %s/%s: %s markets fetched (%.0fs, %.0f mkts/s)",
                     pages_fetched,
                     max_pages,
                     f"{len(all_markets):,}",
@@ -646,74 +517,47 @@ class PolymarketFetcher:
 
                 break
 
-            offset += (
-                config.MARKETS_PER_PAGE
-            )
+            offset += config.MARKETS_PER_PAGE
 
-            if (
-                pages_fetched
-                % 20
-                == 0
-            ):
+            if pages_fetched % 20 == 0:
                 logger.info(
                     "Rate limit pause at page %s...",
                     pages_fetched,
                 )
 
-                time.sleep(
-                    1.0
-                )
+                time.sleep(1.0)
 
             else:
-                time.sleep(
-                    0.2
-                )
+                time.sleep(0.2)
 
-        total_time = (
-            time.time()
-            - fetch_start
-        )
+        total_time = time.time() - fetch_start
 
         self.fetch_stats = {
-            "pages_fetched": (
-                pages_fetched
-            ),
-            "markets_raw": len(
-                all_markets
-            ),
-            "duplicates_removed": (
-                duplicates
-            ),
+            "pages_fetched": (pages_fetched),
+            "markets_raw": len(all_markets),
+            "duplicates_removed": (duplicates),
             "fetch_time_sec": round(
                 total_time,
                 1,
             ),
             "markets_per_sec": (
                 round(
-                    len(all_markets)
-                    / total_time,
+                    len(all_markets) / total_time,
                     1,
                 )
                 if total_time > 0
                 else 0
             ),
-            "incomplete": (
-                incomplete
-            ),
-            "stopped_at_offset": (
-                stopped_at_offset
-            ),
-            "stopped_reason": (
-                stopped_reason
-            ),
+            "incomplete": (incomplete),
+            "stopped_at_offset": (stopped_at_offset),
+            "stopped_reason": (stopped_reason),
         }
 
         if incomplete:
             return []
 
         logger.info(
-            "Pagination complete: %s markets across %s pages "
-            "in %.1fs (%s duplicates removed)",
+            "Pagination complete: %s markets across %s pages in %.1fs (%s duplicates removed)",
             f"{len(all_markets):,}",
             pages_fetched,
             total_time,
@@ -724,12 +568,8 @@ class PolymarketFetcher:
 
     def get_active_markets(
         self,
-        limit: Optional[
-            int
-        ] = 20,
-        max_pages: Optional[
-            int
-        ] = None,
+        limit: Optional[int] = 20,
+        max_pages: Optional[int] = None,
     ) -> List[
         Dict[
             str,
@@ -742,16 +582,10 @@ class PolymarketFetcher:
         Pipeline:
         Pagination → Volume → Not Expired → No Sports
         """
-        all_markets = (
-            self.fetch_all_markets_paginated(
-                max_pages=max_pages
-            )
-        )
+        all_markets = self.fetch_all_markets_paginated(max_pages=max_pages)
 
         if not all_markets:
-            logger.error(
-                "No markets fetched via pagination"
-            )
+            logger.error("No markets fetched via pagination")
 
             return []
 
@@ -773,37 +607,22 @@ class PolymarketFetcher:
         )
 
         time_filtered = [
-            market
-            for market in volume_filtered
-            if self.is_valid_active_market(
-                market
-            )
+            market for market in volume_filtered if self.is_valid_active_market(market)
         ]
 
-        expired_count = (
-            len(volume_filtered)
-            - len(time_filtered)
-        )
+        expired_count = len(volume_filtered) - len(time_filtered)
 
         logger.info(
-            "⏰ Expiry filter: %s active markets "
-            "(%s expired removed)",
+            "⏰ Expiry filter: %s active markets (%s expired removed)",
             f"{len(time_filtered):,}",
             f"{expired_count:,}",
         )
 
         final_markets = [
-            market
-            for market in time_filtered
-            if not self.is_sports_or_live_event(
-                market
-            )
+            market for market in time_filtered if not self.is_sports_or_live_event(market)
         ]
 
-        sports_removed = (
-            len(time_filtered)
-            - len(final_markets)
-        )
+        sports_removed = len(time_filtered) - len(final_markets)
 
         logger.info(
             "🏟️ Sports filter: removed %s sports/live markets",
@@ -817,33 +636,19 @@ class PolymarketFetcher:
 
         self.fetch_stats.update(
             {
-                "markets_after_volume": len(
-                    volume_filtered
-                ),
-                "markets_expired_removed": (
-                    expired_count
-                ),
-                "markets_after_expiry": len(
-                    time_filtered
-                ),
-                "markets_after_sports": len(
-                    final_markets
-                ),
-                "sports_removed": (
-                    sports_removed
-                ),
+                "markets_after_volume": len(volume_filtered),
+                "markets_expired_removed": (expired_count),
+                "markets_after_expiry": len(time_filtered),
+                "markets_after_sports": len(final_markets),
+                "sports_removed": (sports_removed),
             }
         )
 
         if not final_markets:
-            logger.warning(
-                "⚠️ No markets passed all filters"
-            )
+            logger.warning("⚠️ No markets passed all filters")
 
         if limit:
-            return final_markets[
-                :limit
-            ]
+            return final_markets[:limit]
 
         return final_markets
 
@@ -880,9 +685,7 @@ class PolymarketFetcher:
                 str,
             ):
                 try:
-                    outcome_prices = json.loads(
-                        outcome_prices
-                    )
+                    outcome_prices = json.loads(outcome_prices)
 
                 except (
                     json.JSONDecodeError,
@@ -925,41 +728,28 @@ class PolymarketFetcher:
                 )
             )
 
-            now = datetime.now(
-                timezone.utc
-            )
+            now = datetime.now(timezone.utc)
 
             age_days = 30
 
             try:
                 created_str = (
-                    market.get(
-                        "createdAt"
-                    )
-                    or market.get(
-                        "created_at"
-                    )
-                    or market.get(
-                        "startDate"
-                    )
+                    market.get("createdAt")
+                    or market.get("created_at")
+                    or market.get("startDate")
                     or ""
                 )
 
                 if created_str:
                     created = datetime.fromisoformat(
-                        str(
-                            created_str
-                        ).replace(
+                        str(created_str).replace(
                             "Z",
                             "+00:00",
                         )
                     )
 
                     age_days = max(
-                        (
-                            now
-                            - created
-                        ).days,
+                        (now - created).days,
                         1,
                     )
 
@@ -970,29 +760,15 @@ class PolymarketFetcher:
             ):
                 pass
 
-            avg_daily_baseline = (
-                volume_total
-                / age_days
-                if age_days > 0
-                else volume_24hr * 0.5
-            )
+            avg_daily_baseline = volume_total / age_days if age_days > 0 else volume_24hr * 0.5
 
-            spike_ratio = (
-                volume_24hr
-                / avg_daily_baseline
-                if avg_daily_baseline > 0
-                else 1.0
-            )
+            spike_ratio = volume_24hr / avg_daily_baseline if avg_daily_baseline > 0 else 1.0
 
             return {
-                "id": market.get(
-                    "id"
-                ),
+                "id": market.get("id"),
                 "condition_id": market.get(
                     "condition_id",
-                    market.get(
-                        "conditionId"
-                    ),
+                    market.get("conditionId"),
                 ),
                 "question": market.get(
                     "question",
@@ -1008,13 +784,8 @@ class PolymarketFetcher:
                 )[:500],
                 "yes_price": yes_price,
                 "no_price": no_price,
-                "spread": abs(
-                    yes_price
-                    - no_price
-                ),
-                "volume_24hr": (
-                    volume_24hr
-                ),
+                "spread": abs(yes_price - no_price),
+                "volume_24hr": (volume_24hr),
                 "volume": volume_total,
                 "liquidity": _safe_float(
                     market.get(
@@ -1033,18 +804,14 @@ class PolymarketFetcher:
                     "closed",
                     False,
                 ),
-                "end_date_iso": market.get(
-                    "end_date_iso"
-                ),
+                "end_date_iso": market.get("end_date_iso"),
                 "tags": market.get(
                     "tags",
                     [],
                 ),
                 "event_slug": market.get(
                     "event_slug",
-                    market.get(
-                        "eventSlug"
-                    ),
+                    market.get("eventSlug"),
                 ),
                 "clobTokenIds": market.get(
                     "clobTokenIds",
@@ -1057,9 +824,7 @@ class PolymarketFetcher:
                     avg_daily_baseline,
                     2,
                 ),
-                "current_volume": (
-                    volume_24hr
-                ),
+                "current_volume": (volume_24hr),
                 "spike_ratio": round(
                     spike_ratio,
                     3,
@@ -1098,18 +863,9 @@ class PolymarketFetcher:
         ]
     ]:
         """Build snapshots for a list of markets."""
-        snapshots = [
-            self.get_market_snapshot(
-                market
-            )
-            for market in markets
-        ]
+        snapshots = [self.get_market_snapshot(market) for market in markets]
 
-        return [
-            snapshot
-            for snapshot in snapshots
-            if snapshot is not None
-        ]
+        return [snapshot for snapshot in snapshots if snapshot is not None]
 
     def calculate_baseline(
         self,
@@ -1124,10 +880,7 @@ class PolymarketFetcher:
         float,
     ]:
         """Legacy baseline from volume history DataFrame."""
-        if (
-            not volumes
-            or len(volumes) < 6
-        ):
+        if not volumes or len(volumes) < 6:
             return {
                 "baseline": 0.0,
                 "current_volume": 0.0,
@@ -1137,20 +890,14 @@ class PolymarketFetcher:
         try:
             import pandas as pd
 
-            frame = pd.DataFrame(
-                volumes
-            )
+            frame = pd.DataFrame(volumes)
 
             frame["volume"] = pd.to_numeric(
                 frame["volume"],
                 errors="coerce",
             )
 
-            frame = frame.dropna(
-                subset=[
-                    "volume"
-                ]
-            )
+            frame = frame.dropna(subset=["volume"])
 
             if len(frame) < 6:
                 return {
@@ -1159,34 +906,16 @@ class PolymarketFetcher:
                     "spike_ratio": 1.0,
                 }
 
-            baseline = (
-                frame["volume"]
-                .tail(6)
-                .mean()
-            )
+            baseline = frame["volume"].tail(6).mean()
 
-            current = (
-                frame["volume"]
-                .iloc[-1]
-            )
+            current = frame["volume"].iloc[-1]
 
-            spike_ratio = (
-                current
-                / baseline
-                if baseline > 0
-                else 1.0
-            )
+            spike_ratio = current / baseline if baseline > 0 else 1.0
 
             return {
-                "baseline": float(
-                    baseline
-                ),
-                "current_volume": float(
-                    current
-                ),
-                "spike_ratio": float(
-                    spike_ratio
-                ),
+                "baseline": float(baseline),
+                "current_volume": float(current),
+                "spike_ratio": float(spike_ratio),
             }
 
         except Exception as exc:

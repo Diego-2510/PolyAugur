@@ -125,9 +125,7 @@ class MistralAnalyzer:
 
     def __init__(self):
         if not config.MISTRAL_API_KEY:
-            logger.warning(
-                "⚠️ MISTRAL_API_KEY not set – will use rule-based fallback"
-            )
+            logger.warning("⚠️ MISTRAL_API_KEY not set – will use rule-based fallback")
             self.client = None
         else:
             self.client = Mistral(api_key=config.MISTRAL_API_KEY)
@@ -165,11 +163,11 @@ class MistralAnalyzer:
         return f"""
 WHALE INTELLIGENCE (from CLOB on-chain trades)
 - Whale trades (>$5k): {whale_count}
-- Whale volume %: {snapshot.get('whale_volume_pct', 0):.0%}
-- Top wallet %: {snapshot.get('top_wallet_pct', 0):.0%}
-- Unique wallets: {snapshot.get('unique_wallets', 0)}
-- Directional bias: {snapshot.get('directional_bias', 0.5):.0%} {snapshot.get('dominant_side', 'NONE')}
-- Timing burst: {snapshot.get('burst_score', 1.0):.1f}x (last 1h vs avg)
+- Whale volume %: {snapshot.get("whale_volume_pct", 0):.0%}
+- Top wallet %: {snapshot.get("top_wallet_pct", 0):.0%}
+- Unique wallets: {snapshot.get("unique_wallets", 0)}
+- Directional bias: {snapshot.get("directional_bias", 0.5):.0%} {snapshot.get("dominant_side", "NONE")}
+- Timing burst: {snapshot.get("burst_score", 1.0):.1f}x (last 1h vs avg)
 - Suspicious: {suspicious}
 """
 
@@ -188,12 +186,8 @@ WHALE INTELLIGENCE (from CLOB on-chain trades)
 
         try:
             if end_date and end_date != "Unknown":
-                closes_at = datetime.fromisoformat(
-                    str(end_date).replace("Z", "+00:00")
-                )
-                days_to_close = (
-                    closes_at - datetime.now(timezone.utc)
-                ).days
+                closes_at = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+                days_to_close = (closes_at - datetime.now(timezone.utc)).days
         except (ValueError, TypeError):
             pass
 
@@ -218,13 +212,11 @@ WHALE INTELLIGENCE (from CLOB on-chain trades)
 
         if yes_price < 0.01:
             price_warning = (
-                "\n⚠️ WARNING: YES price < $0.01. "
-                "recommended_trade MUST be HOLD for BUY_NO."
+                "\n⚠️ WARNING: YES price < $0.01. recommended_trade MUST be HOLD for BUY_NO."
             )
         elif yes_price > 0.99:
             price_warning = (
-                "\n⚠️ WARNING: YES price > $0.99. "
-                "recommended_trade MUST be HOLD for BUY_YES."
+                "\n⚠️ WARNING: YES price > $0.99. recommended_trade MUST be HOLD for BUY_YES."
             )
         elif yes_price < 0.03 or yes_price > 0.97:
             price_warning = (
@@ -260,23 +252,19 @@ WHALE INTELLIGENCE (from CLOB on-chain trades)
                 "one of multiple candidate markets for the same election."
             )
 
-        whale_instruction = (
-            " Factor in WHALE INTELLIGENCE if provided."
-            if whale_section
-            else ""
-        )
+        whale_instruction = " Factor in WHALE INTELLIGENCE if provided." if whale_section else ""
 
         return f"""MARKET SNAPSHOT
-Question: {snapshot.get('question', 'Unknown')}
-Description: {snapshot.get('description', 'N/A')[:200]}
+Question: {snapshot.get("question", "Unknown")}
+Description: {snapshot.get("description", "N/A")[:200]}
 Closes in: {days_to_close} days ({end_date}){timing_warning}{price_warning}
 
 PRICING & VOLUME
-- YES Price: {yes_price:.3f} | NO Price: {snapshot.get('no_price', 0.5):.3f}
-- Spread: {snapshot.get('spread', 0):.3f}
-- 24h Volume: ${snapshot.get('volume_24hr', 0):,.0f}
-- Liquidity: ${snapshot.get('liquidity', 0):,.0f}
-- All-time Volume: ${snapshot.get('volume', 0):,.0f}
+- YES Price: {yes_price:.3f} | NO Price: {snapshot.get("no_price", 0.5):.3f}
+- Spread: {snapshot.get("spread", 0):.3f}
+- 24h Volume: ${snapshot.get("volume_24hr", 0):,.0f}
+- Liquidity: ${snapshot.get("liquidity", 0):,.0f}
+- All-time Volume: ${snapshot.get("volume", 0):,.0f}
 
 OBSERVATION CHANGE METRICS
 - Price change since previous observation: {price_change_text}
@@ -286,13 +274,13 @@ OBSERVATION CHANGE METRICS
   (normalization only; not a forecast or an observed one-hour move)
 
 ANOMALY PRE-DETECTION
-- Volume Spike Ratio: {volume.get('spike_ratio', 1.0):.2f}x baseline
-- Volume Severity: {volume.get('severity', 'none')}
-- Price Indicators: {price.get('indicators', [])}
-- Vol/Liquidity Ratio: {price.get('vol_liq_ratio', 0):.2f}x
-- Topic Sensitivity: {topic.get('reasons', [])}
-- Time Horizon Multiplier: {topic.get('multiplier', 1.0):.2f}
-- Pre-screen Score: {anomaly_result.get('score', 0):.3f}
+- Volume Spike Ratio: {volume.get("spike_ratio", 1.0):.2f}x baseline
+- Volume Severity: {volume.get("severity", "none")}
+- Price Indicators: {price.get("indicators", [])}
+- Vol/Liquidity Ratio: {price.get("vol_liq_ratio", 0):.2f}x
+- Topic Sensitivity: {topic.get("reasons", [])}
+- Time Horizon Multiplier: {topic.get("multiplier", 1.0):.2f}
+- Pre-screen Score: {anomaly_result.get("score", 0):.3f}
 {whale_section}
 QUESTION: Is this unusual activity likely (1) informed/insider trading, (2) retail hype, or (3) normal market activity?
 Apply TIME HORIZON RULE first. Apply EXTREME PRICE RULE if relevant.{competing_rule}{whale_instruction}
@@ -407,9 +395,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 item["recommended_position_size_pct"] = 0.0
                 item["holding_period_hours"] = 0
                 item["counter_evidence"].append(
-                    "Price override: "
-                    f"yes_price={yes_price:.4f} — "
-                    "BUY_NO payout < $0.01 per dollar"
+                    f"Price override: yes_price={yes_price:.4f} — BUY_NO payout < $0.01 per dollar"
                 )
 
             elif yes_price > 0.99 and trade == "BUY_YES":
@@ -421,9 +407,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 item["recommended_position_size_pct"] = 0.0
                 item["holding_period_hours"] = 0
                 item["counter_evidence"].append(
-                    "Price override: "
-                    f"yes_price={yes_price:.4f} — "
-                    "BUY_YES has no upside remaining"
+                    f"Price override: yes_price={yes_price:.4f} — BUY_YES has no upside remaining"
                 )
 
         return validated
@@ -458,11 +442,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             ]
 
             matched_marker = next(
-                (
-                    marker
-                    for marker in election_markers
-                    if marker in question
-                ),
+                (marker for marker in election_markers if marker in question),
                 None,
             )
 
@@ -513,8 +493,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             for index in flagged_sorted[self.MAX_SIGNALS_PER_GROUP :]:
                 override_indices.add(index)
                 logger.info(
-                    "🔧 Group dedup override: HOLD ← %s "
-                    "(group=%s, conf=%.2f)",
+                    "🔧 Group dedup override: HOLD ← %s (group=%s, conf=%.2f)",
                     items[index][0].get("question", "")[:50],
                     group_key,
                     results[index].get("confidence_score", 0),
@@ -528,8 +507,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 "counter_evidence",
                 [],
             ).append(
-                "Group dedup: competing candidate market — "
-                "stronger signal exists in same group"
+                "Group dedup: competing candidate market — stronger signal exists in same group"
             )
 
         if override_indices:
@@ -569,12 +547,8 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
 
         try:
             if end_date:
-                closes_at = datetime.fromisoformat(
-                    str(end_date).replace("Z", "+00:00")
-                )
-                days_to_close = (
-                    closes_at - datetime.now(timezone.utc)
-                ).days
+                closes_at = datetime.fromisoformat(str(end_date).replace("Z", "+00:00"))
+                days_to_close = (closes_at - datetime.now(timezone.utc)).days
         except (ValueError, TypeError):
             pass
 
@@ -582,27 +556,18 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             return {
                 "anomaly_detected": spike_ratio >= 5.0,
                 "confidence_score": 0.0,
-                "anomaly_type": (
-                    "volume_spike"
-                    if spike_ratio >= 5.0
-                    else "none"
-                ),
+                "anomaly_type": ("volume_spike" if spike_ratio >= 5.0 else "none"),
                 "reasoning": (
-                    "Rule-based: market closes today "
-                    f"(days={days_to_close}). Too late to trade."
+                    f"Rule-based: market closes today (days={days_to_close}). Too late to trade."
                 ),
                 "recommended_trade": "HOLD",
                 "recommended_position_size_pct": 0.0,
                 "risk_level": "high",
                 "holding_period_hours": 0,
                 "supporting_evidence": (
-                    [f"Spike {spike_ratio:.1f}x"]
-                    if spike_ratio >= 5.0
-                    else []
+                    [f"Spike {spike_ratio:.1f}x"] if spike_ratio >= 5.0 else []
                 ),
-                "counter_evidence": [
-                    "Market closes today — no actionable edge"
-                ],
+                "counter_evidence": ["Market closes today — no actionable edge"],
                 "source": "rule_based_fallback",
             }
 
@@ -611,18 +576,13 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 "anomaly_detected": False,
                 "confidence_score": 0.0,
                 "anomaly_type": "none",
-                "reasoning": (
-                    "Rule-based: "
-                    f"time_multiplier={multiplier:.2f} or score too low"
-                ),
+                "reasoning": (f"Rule-based: time_multiplier={multiplier:.2f} or score too low"),
                 "recommended_trade": "HOLD",
                 "recommended_position_size_pct": 0.0,
                 "risk_level": "low",
                 "holding_period_hours": 0,
                 "supporting_evidence": [],
-                "counter_evidence": [
-                    "Long time horizon or insufficient signal"
-                ],
+                "counter_evidence": ["Long time horizon or insufficient signal"],
                 "source": "rule_based_fallback",
             }
 
@@ -635,40 +595,21 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
         else:
             trade = "HOLD"
 
-        confidence = (
-            min(score * 0.80, 0.70)
-            if trade != "HOLD"
-            else 0.0
-        )
+        confidence = min(score * 0.80, 0.70) if trade != "HOLD" else 0.0
 
-        anomaly_type = (
-            "volume_spike"
-            if score >= 0.60
-            else "none"
-        )
+        anomaly_type = "volume_spike" if score >= 0.60 else "none"
 
         return {
             "anomaly_detected": score >= 0.60,
             "confidence_score": round(confidence, 3),
             "anomaly_type": anomaly_type,
-            "reasoning": (
-                "Rule-based fallback: "
-                f"score={score:.2f}, spike={spike_ratio:.1f}x"
-            ),
+            "reasoning": (f"Rule-based fallback: score={score:.2f}, spike={spike_ratio:.1f}x"),
             "recommended_trade": trade,
-            "recommended_position_size_pct": (
-                0.05 if trade != "HOLD" else 0.0
-            ),
-            "risk_level": (
-                "high" if score >= 0.70 else "medium"
-            ),
+            "recommended_position_size_pct": (0.05 if trade != "HOLD" else 0.0),
+            "risk_level": ("high" if score >= 0.70 else "medium"),
             "holding_period_hours": 6,
-            "supporting_evidence": [
-                f"Volume spike {spike_ratio:.1f}x baseline"
-            ],
-            "counter_evidence": [
-                "No LLM validation available"
-            ],
+            "supporting_evidence": [f"Volume spike {spike_ratio:.1f}x baseline"],
+            "counter_evidence": ["No LLM validation available"],
             "source": "rule_based_fallback",
         }
 
@@ -683,10 +624,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 anomaly_result,
             )
 
-        if (
-            self.call_count
-            >= config.MAX_MISTRAL_CALLS_PER_CYCLE
-        ):
+        if self.call_count >= config.MAX_MISTRAL_CALLS_PER_CYCLE:
             logger.warning(
                 "Mistral call budget (%s) exhausted",
                 config.MAX_MISTRAL_CALLS_PER_CYCLE,
@@ -743,13 +681,10 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 "question",
                 "Unknown",
             )
-            signal["timestamp"] = datetime.now(
-                timezone.utc
-            ).isoformat()
+            signal["timestamp"] = datetime.now(timezone.utc).isoformat()
 
             logger.info(
-                "🧠 Mistral: %s | Anomaly=%s | "
-                "Confidence=%.2f | Trade=%s",
+                "🧠 Mistral: %s | Anomaly=%s | Confidence=%.2f | Trade=%s",
                 snapshot.get("question", "")[:50],
                 signal.get("anomaly_detected"),
                 signal.get("confidence_score", 0),
@@ -790,22 +725,11 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
             len(items),
             batch_size,
         ):
-            batch = items[
-                start : start + batch_size
-            ]
-            batch_snapshots = [
-                snapshot
-                for snapshot, _ in batch
-            ]
+            batch = items[start : start + batch_size]
+            batch_snapshots = [snapshot for snapshot, _ in batch]
 
-            if (
-                self.call_count
-                >= config.MAX_MISTRAL_CALLS_PER_CYCLE
-            ):
-                logger.warning(
-                    "Mistral budget exhausted, "
-                    "using fallback for remaining"
-                )
+            if self.call_count >= config.MAX_MISTRAL_CALLS_PER_CYCLE:
+                logger.warning("Mistral budget exhausted, using fallback for remaining")
 
                 for snapshot, anomaly_result in batch:
                     results.append(
@@ -836,9 +760,7 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                 continue
 
             try:
-                prompt = self._build_batch_prompt(
-                    batch
-                )
+                prompt = self._build_batch_prompt(batch)
 
                 response = self.client.chat.complete(
                     model=config.MISTRAL_MODEL,
@@ -868,36 +790,22 @@ RESPOND WITH JSON ARRAY ONLY: [{{"anomaly_detected": ..., "confidence_score": ..
                     snapshots=batch_snapshots,
                 )
 
-                if (
-                    parsed
-                    and len(parsed) == len(batch)
-                ):
-                    for index, signal in enumerate(
-                        parsed
-                    ):
+                if parsed and len(parsed) == len(batch):
+                    for index, signal in enumerate(parsed):
                         snapshot = batch[index][0]
                         signal["source"] = "mistral_batch"
-                        signal["market_id"] = snapshot.get(
-                            "id"
-                        )
-                        signal["question"] = snapshot.get(
-                            "question"
-                        )
-                        signal["timestamp"] = datetime.now(
-                            timezone.utc
-                        ).isoformat()
+                        signal["market_id"] = snapshot.get("id")
+                        signal["question"] = snapshot.get("question")
+                        signal["timestamp"] = datetime.now(timezone.utc).isoformat()
                         results.append(signal)
 
                     logger.info(
-                        "🧠 Mistral batch: %s markets "
-                        "analyzed in 1 call",
+                        "🧠 Mistral batch: %s markets analyzed in 1 call",
                         len(batch),
                     )
 
                 else:
-                    logger.warning(
-                        "Batch parse mismatch, falling back"
-                    )
+                    logger.warning("Batch parse mismatch, falling back")
 
                     for snapshot, anomaly_result in batch:
                         results.append(

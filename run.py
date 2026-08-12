@@ -26,24 +26,24 @@ def setup_logging():
     date_str = datetime.now().strftime("%Y-%m-%d")
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f"logs/polyaugur_{date_str}.log", encoding='utf-8'),
+        logging.FileHandler(f"logs/polyaugur_{date_str}.log", encoding="utf-8"),
     ]
     logging.basicConfig(
         level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         handlers=handlers,
     )
 
 
 def main():
     parser = argparse.ArgumentParser(description="PolyAugur v1.0")
-    parser.add_argument('--once', action='store_true', help='Single detection cycle')
-    parser.add_argument('--cycles', type=int, default=None, help='Run N cycles')
-    parser.add_argument('--interval', type=int, default=None, help='Override poll interval')
-    parser.add_argument('--check', action='store_true', help='Check outcomes only')
-    parser.add_argument('--stats', action='store_true', help='Show DB stats and exit')
-    parser.add_argument('--health', action='store_true', help='Pre-flight check only')
-    parser.add_argument('--skip-preflight', action='store_true', help='Skip pre-flight check')
+    parser.add_argument("--once", action="store_true", help="Single detection cycle")
+    parser.add_argument("--cycles", type=int, default=None, help="Run N cycles")
+    parser.add_argument("--interval", type=int, default=None, help="Override poll interval")
+    parser.add_argument("--check", action="store_true", help="Check outcomes only")
+    parser.add_argument("--stats", action="store_true", help="Show DB stats and exit")
+    parser.add_argument("--health", action="store_true", help="Pre-flight check only")
+    parser.add_argument("--skip-preflight", action="store_true", help="Skip pre-flight check")
     args = parser.parse_args()
 
     setup_logging()
@@ -55,12 +55,14 @@ def main():
     # Health check mode
     if args.health:
         from src.health import main as health_main
+
         health_main()
         return
 
     # Stats mode
     if args.stats:
         from src.signal_store import SignalStore
+
         store = SignalStore(config.SIGNAL_DB_PATH)
         stats = store.get_stats()
         print("\n📊 PolyAugur Signal Stats")
@@ -71,7 +73,7 @@ def main():
         if recent:
             print(f"\n📋 Last 24h signals ({len(recent)}):")
             for s in recent[:10]:
-                whale = "🐋" if s.get('trade_suspicious') else "  "
+                whale = "🐋" if s.get("trade_suspicious") else "  "
                 print(
                     f"   {whale} {s.get('question', '')[:50]} | "
                     f"{s.get('trade')} | {s.get('confidence', 0):.0%} | "
@@ -83,6 +85,7 @@ def main():
     if args.check:
         from src.signal_store import SignalStore
         from src.performance_tracker import PerformanceTracker
+
         store = SignalStore(config.SIGNAL_DB_PATH)
         tracker = PerformanceTracker(store)
         summary = tracker.check_outcomes()
@@ -92,6 +95,7 @@ def main():
     # ── Pre-flight check ─────────────────────────────────────────────
     if not args.skip_preflight:
         from src.health import HealthMonitor
+
         monitor = HealthMonitor()
         results = monitor.preflight_check()
 
@@ -100,7 +104,7 @@ def main():
         for check, passed in results.items():
             emoji = "✅" if passed else "❌"
             logger.info(f"   {emoji} {check}: {'OK' if passed else 'FAIL'}")
-            if not passed and check in ('mistral_key', 'gamma_api', 'db_writable'):
+            if not passed and check in ("mistral_key", "gamma_api", "db_writable"):
                 critical_fail = True
 
         if critical_fail:
@@ -128,7 +132,9 @@ def main():
         try:
             summary = orch.run_cycle()
             health.record_cycle(summary)
-            logger.info(f"Done: {summary.get('signal_count', 0)} signals in {summary.get('cycle_time_sec', 0)}s")
+            logger.info(
+                f"Done: {summary.get('signal_count', 0)} signals in {summary.get('cycle_time_sec', 0)}s"
+            )
         except Exception as e:
             health.record_error(str(e))
             logger.error(f"Cycle failed: {e}", exc_info=True)
@@ -152,6 +158,7 @@ def main():
 
                 logger.info(f"💤 Sleeping {config.POLL_INTERVAL_SEC}s...")
                 import time
+
                 time.sleep(config.POLL_INTERVAL_SEC)
 
             except KeyboardInterrupt:
@@ -162,6 +169,7 @@ def main():
                 health.record_error(str(e))
                 logger.error(f"Cycle error: {e}", exc_info=True)
                 import time
+
                 time.sleep(5)
 
 

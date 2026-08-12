@@ -31,10 +31,10 @@ class HealthMonitor:
         self.last_successful_cycle: Optional[datetime] = None
         self.last_error: Optional[str] = None
         self.api_health: Dict[str, bool] = {
-            'gamma': True,
-            'mistral': True,
-            'clob': True,
-            'telegram': True,
+            "gamma": True,
+            "mistral": True,
+            "clob": True,
+            "telegram": True,
         }
 
         # Alert thresholds
@@ -45,20 +45,20 @@ class HealthMonitor:
     def record_cycle(self, summary: Dict[str, Any]):
         """Record a successful cycle."""
         self.total_cycles += 1
-        self.total_signals += summary.get('signal_count', 0)
+        self.total_signals += summary.get("signal_count", 0)
         self.consecutive_errors = 0
         self.last_successful_cycle = datetime.now(timezone.utc)
 
         # Check for API issues within the cycle
-        if summary.get('markets_fetched', 0) == 0:
-            self.api_health['gamma'] = False
+        if summary.get("markets_fetched", 0) == 0:
+            self.api_health["gamma"] = False
         else:
-            self.api_health['gamma'] = True
+            self.api_health["gamma"] = True
 
-        if summary.get('mistral_calls', 0) == 0 and summary.get('anomalies_detected', 0) > 0:
-            self.api_health['mistral'] = False
+        if summary.get("mistral_calls", 0) == 0 and summary.get("anomalies_detected", 0) > 0:
+            self.api_health["mistral"] = False
         else:
-            self.api_health['mistral'] = True
+            self.api_health["mistral"] = True
 
     def record_error(self, error: str):
         """Record a cycle error."""
@@ -84,25 +84,25 @@ class HealthMonitor:
         hours = uptime.total_seconds() / 3600
 
         return {
-            'status': 'healthy' if self.consecutive_errors == 0 else 'degraded',
-            'uptime_hours': round(hours, 1),
-            'total_cycles': self.total_cycles,
-            'total_signals': self.total_signals,
-            'total_errors': self.total_errors,
-            'consecutive_errors': self.consecutive_errors,
-            'last_error': self.last_error,
-            'api_health': self.api_health,
-            'signals_per_hour': round(self.total_signals / max(hours, 0.01), 1),
+            "status": "healthy" if self.consecutive_errors == 0 else "degraded",
+            "uptime_hours": round(hours, 1),
+            "total_cycles": self.total_cycles,
+            "total_signals": self.total_signals,
+            "total_errors": self.total_errors,
+            "consecutive_errors": self.consecutive_errors,
+            "last_error": self.last_error,
+            "api_health": self.api_health,
+            "signals_per_hour": round(self.total_signals / max(hours, 0.01), 1),
         }
 
     def send_health_ping(self):
         """Send health status to Telegram."""
         status = self.get_status()
-        uptime_h = status['uptime_hours']
-        emoji = '✅' if status['status'] == 'healthy' else '⚠️'
+        uptime_h = status["uptime_hours"]
+        emoji = "✅" if status["status"] == "healthy" else "⚠️"
 
         api_lines = []
-        for api, healthy in status['api_health'].items():
+        for api, healthy in status["api_health"].items():
             api_lines.append(f"   {api}: {'✅' if healthy else '❌'}")
         api_str = "\n".join(api_lines)
 
@@ -142,7 +142,7 @@ class HealthMonitor:
                     url,
                     json={
                         "chat_id": config.TELEGRAM_CHAT_ID,
-                        "text": message.replace('*', '').replace('\\', '').replace('`', ''),
+                        "text": message.replace("*", "").replace("\\", "").replace("`", ""),
                     },
                     timeout=10,
                 )
@@ -158,10 +158,10 @@ class HealthMonitor:
         results = {}
 
         # 1. Mistral API key
-        results['mistral_key'] = bool(config.MISTRAL_API_KEY)
+        results["mistral_key"] = bool(config.MISTRAL_API_KEY)
 
         # 2. Telegram config
-        results['telegram_config'] = bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
+        results["telegram_config"] = bool(config.TELEGRAM_BOT_TOKEN and config.TELEGRAM_CHAT_ID)
 
         # 3. Gamma API reachable
         try:
@@ -169,9 +169,9 @@ class HealthMonitor:
                 f"{config.GAMMA_API_BASE}/markets?limit=1",
                 timeout=10,
             )
-            results['gamma_api'] = resp.status_code == 200
+            results["gamma_api"] = resp.status_code == 200
         except Exception:
-            results['gamma_api'] = False
+            results["gamma_api"] = False
 
         # 4. CLOB API reachable
         try:
@@ -179,34 +179,36 @@ class HealthMonitor:
                 f"{config.CLOB_API_BASE}/time",
                 timeout=10,
             )
-            results['clob_api'] = resp.status_code == 200
+            results["clob_api"] = resp.status_code == 200
         except Exception:
-            results['clob_api'] = False
+            results["clob_api"] = False
 
         # 5. DB writable
         try:
             import os
+
             db_dir = os.path.dirname(config.SIGNAL_DB_PATH)
             os.makedirs(db_dir, exist_ok=True)
-            results['db_writable'] = True
+            results["db_writable"] = True
         except Exception:
-            results['db_writable'] = False
+            results["db_writable"] = False
 
         # 6. Mistral API reachable (quick test)
         if config.MISTRAL_API_KEY:
             try:
                 from mistralai import Mistral
+
                 client = Mistral(api_key=config.MISTRAL_API_KEY)
                 resp = client.chat.complete(
                     model=config.MISTRAL_MODEL,
                     messages=[{"role": "user", "content": "reply OK"}],
                     max_tokens=5,
                 )
-                results['mistral_api'] = bool(resp.choices)
+                results["mistral_api"] = bool(resp.choices)
             except Exception:
-                results['mistral_api'] = False
+                results["mistral_api"] = False
         else:
-            results['mistral_api'] = False
+            results["mistral_api"] = False
 
         return results
 
@@ -223,7 +225,7 @@ def main():
     for check, passed in results.items():
         emoji = "✅" if passed else "❌"
         print(f"  {emoji} {check:20s}: {'OK' if passed else 'FAIL'}")
-        if not passed and check in ('mistral_key', 'gamma_api', 'db_writable'):
+        if not passed and check in ("mistral_key", "gamma_api", "db_writable"):
             all_ok = False
 
     print()

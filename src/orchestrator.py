@@ -140,59 +140,39 @@ class Orchestrator:
                     and previous_timestamp.tzinfo is not None
                     and previous_timestamp.utcoffset() is not None
                 ):
-                    previous_timestamp = previous_timestamp.astimezone(
-                        timezone.utc
-                    )
+                    previous_timestamp = previous_timestamp.astimezone(timezone.utc)
 
-                    elapsed_seconds = (
-                        now - previous_timestamp
-                    ).total_seconds()
+                    elapsed_seconds = (now - previous_timestamp).total_seconds()
 
                     # A wall-clock correction can theoretically produce a
                     # zero or negative interval. Do not fabricate a metric.
                     if elapsed_seconds > 0:
-                        price_change = (
-                            current_price
-                            - float(previous["yes_price"])
-                        )
+                        price_change = current_price - float(previous["yes_price"])
 
-                        volume_change = (
-                            current_volume
-                            - float(
-                                previous.get(
-                                    "volume_24hr",
-                                    0.0,
-                                )
+                        volume_change = current_volume - float(
+                            previous.get(
+                                "volume_24hr",
+                                0.0,
                             )
                         )
 
-                        snapshot[
-                            "price_change_since_last_observation"
-                        ] = round(
+                        snapshot["price_change_since_last_observation"] = round(
                             price_change,
                             6,
                         )
 
-                        snapshot[
-                            "volume_24h_change_since_last_observation"
-                        ] = round(
+                        snapshot["volume_24h_change_since_last_observation"] = round(
                             volume_change,
                             2,
                         )
 
-                        snapshot[
-                            "seconds_since_last_observation"
-                        ] = round(
+                        snapshot["seconds_since_last_observation"] = round(
                             elapsed_seconds,
                             3,
                         )
 
-                        snapshot[
-                            "price_change_per_hour_linearized"
-                        ] = round(
-                            price_change
-                            * 3600.0
-                            / elapsed_seconds,
+                        snapshot["price_change_per_hour_linearized"] = round(
+                            price_change * 3600.0 / elapsed_seconds,
                             6,
                         )
 
@@ -230,12 +210,8 @@ class Orchestrator:
         trade_dir = result.get("recommended_trade", "HOLD")
         dom_side = trade_metrics.get("dominant_side", "NONE")
 
-        if (
-            trade_dir == "BUY_YES"
-            and dom_side == "BUY"
-        ) or (
-            trade_dir == "BUY_NO"
-            and dom_side == "SELL"
+        if (trade_dir == "BUY_YES" and dom_side == "BUY") or (
+            trade_dir == "BUY_NO" and dom_side == "SELL"
         ):
             boost += 0.05
 
@@ -306,9 +282,7 @@ class Orchestrator:
             "spike_ratio": snapshot.get("spike_ratio", 1.0),
             "end_date_iso": snapshot.get("end_date_iso"),
             "cycle": cycle,
-            "detected_at": datetime.now(
-                timezone.utc
-            ).isoformat(),
+            "detected_at": datetime.now(timezone.utc).isoformat(),
             "score": anomaly_score,
             "anomaly_score": anomaly_score,
             "whale_count": trade_metrics.get(
@@ -356,23 +330,15 @@ class Orchestrator:
         if sent:
             self.store.mark_telegram_sent(row_id)
 
-        whale_tag = (
-            " 🐋"
-            if trade_metrics.get("suspicious")
-            else ""
-        )
+        whale_tag = " 🐋" if trade_metrics.get("suspicious") else ""
 
         boost_tag = ""
 
         if result.get("confidence_boost", 0) > 0:
-            boost_tag = (
-                f" (↑{result['confidence_boost']:.0%})"
-            )
+            boost_tag = f" (↑{result['confidence_boost']:.0%})"
 
         logger.info(
-            "📣 SIGNAL #%s: %s | Trade=%s | "
-            "Conf=%.2f%s | AnomalyScore=%.3f | "
-            "Telegram=%s%s",
+            "📣 SIGNAL #%s: %s | Trade=%s | Conf=%.2f%s | AnomalyScore=%.3f | Telegram=%s%s",
             row_id,
             result.get("question", "")[:45],
             result.get("recommended_trade"),
@@ -410,9 +376,7 @@ class Orchestrator:
         )
 
         if not markets:
-            logger.warning(
-                "No markets fetched – skipping cycle"
-            )
+            logger.warning("No markets fetched – skipping cycle")
 
             return {
                 "cycle": self.cycle_count,
@@ -431,13 +395,9 @@ class Orchestrator:
         )
 
         # ── Step 2: Snapshots ───────────────────────────────────────
-        logger.info(
-            "📸 Step 2: Building snapshots..."
-        )
+        logger.info("📸 Step 2: Building snapshots...")
 
-        snapshots = self.fetcher.get_snapshots_batch(
-            markets
-        )
+        snapshots = self.fetcher.get_snapshots_batch(markets)
 
         snapshots_raw_count = len(snapshots)
 
@@ -447,26 +407,19 @@ class Orchestrator:
         )
 
         # ── Step 3: Observation metrics ─────────────────────────────
-        logger.info(
-            "📈 Step 3: Price observation enrichment..."
-        )
+        logger.info("📈 Step 3: Price observation enrichment...")
 
-        snapshots = self.enrich_with_price_velocity(
-            snapshots
-        )
+        snapshots = self.enrich_with_price_velocity(snapshots)
 
         # ── Step 3.5: Elite Pre-Filter ──────────────────────────────
         logger.info(
-            "🎯 Step 3.5: Elite pre-filter "
-            "(spike≥%sx, ≤%sd, recency≥%.0f%%)...",
+            "🎯 Step 3.5: Elite pre-filter (spike≥%sx, ≤%sd, recency≥%.0f%%)...",
             config.MIN_SPIKE_RATIO,
             config.MAX_DAYS_TO_CLOSE,
             config.MIN_RECENCY_RATIO * 100,
         )
 
-        now_utc = datetime.now(
-            timezone.utc
-        )
+        now_utc = datetime.now(timezone.utc)
 
         filtered_snapshots = []
 
@@ -480,9 +433,7 @@ class Orchestrator:
             ):
                 continue
 
-            end_date = snapshot.get(
-                "end_date_iso"
-            )
+            end_date = snapshot.get("end_date_iso")
 
             if end_date:
                 try:
@@ -493,15 +444,9 @@ class Orchestrator:
                         )
                     )
 
-                    days_left = (
-                        closes
-                        - now_utc
-                    ).days
+                    days_left = (closes - now_utc).days
 
-                    if (
-                        days_left
-                        > config.MAX_DAYS_TO_CLOSE
-                    ):
+                    if days_left > config.MAX_DAYS_TO_CLOSE:
                         continue
 
                 except (
@@ -521,29 +466,17 @@ class Orchestrator:
             )
 
             if vol_total > 0:
-                recency = (
-                    vol_24h
-                    / vol_total
-                )
+                recency = vol_24h / vol_total
 
-                if (
-                    recency
-                    < config.MIN_RECENCY_RATIO
-                ):
+                if recency < config.MIN_RECENCY_RATIO:
                     continue
 
-            filtered_snapshots.append(
-                snapshot
-            )
+            filtered_snapshots.append(snapshot)
 
-        elite_filtered_count = (
-            len(snapshots)
-            - len(filtered_snapshots)
-        )
+        elite_filtered_count = len(snapshots) - len(filtered_snapshots)
 
         logger.info(
-            "🎯 Elite pre-filter: %s/%s snapshots passed "
-            "(%s eliminated)",
+            "🎯 Elite pre-filter: %s/%s snapshots passed (%s eliminated)",
             len(filtered_snapshots),
             snapshots_raw_count,
             elite_filtered_count,
@@ -553,21 +486,13 @@ class Orchestrator:
 
         # ── Step 4: Anomaly detection ───────────────────────────────
         logger.info(
-            "🔍 Step 4: Anomaly detection "
-            "(Blacklist Mode) on %s markets...",
+            "🔍 Step 4: Anomaly detection (Blacklist Mode) on %s markets...",
             len(snapshots),
         )
 
-        anomaly_results = (
-            self.detector.batch_detect(
-                snapshots
-            )
-        )
+        anomaly_results = self.detector.batch_detect(snapshots)
 
-        snapshot_map = {
-            snapshot["id"]: snapshot
-            for snapshot in snapshots
-        }
+        snapshot_map = {snapshot["id"]: snapshot for snapshot in snapshots}
 
         blacklisted = [
             result
@@ -587,8 +512,7 @@ class Orchestrator:
                         "question",
                         "",
                     )[:35]
-                    for result
-                    in blacklisted[:3]
+                    for result in blacklisted[:3]
                 ],
             )
 
@@ -605,8 +529,7 @@ class Orchestrator:
             1
             for result in anomaly_results
             if any(
-                "critical_insider"
-                in reason
+                "critical_insider" in reason
                 for reason in (
                     result.get(
                         "breakdown",
@@ -628,8 +551,7 @@ class Orchestrator:
             1
             for result in anomaly_results
             if any(
-                "elevated_insider"
-                in reason
+                "elevated_insider" in reason
                 for reason in (
                     result.get(
                         "breakdown",
@@ -646,8 +568,7 @@ class Orchestrator:
                 )
             )
             and not any(
-                "critical_insider"
-                in reason
+                "critical_insider" in reason
                 for reason in (
                     result.get(
                         "breakdown",
@@ -665,15 +586,10 @@ class Orchestrator:
             )
         )
 
-        no_topic_count = (
-            len(anomaly_results)
-            - critical_count
-            - elevated_count
-        )
+        no_topic_count = len(anomaly_results) - critical_count - elevated_count
 
         logger.info(
-            "📊 Topic distribution: 🔴 %s critical | "
-            "🟡 %s elevated | ⚪ %s no-topic",
+            "📊 Topic distribution: 🔴 %s critical | 🟡 %s elevated | ⚪ %s no-topic",
             critical_count,
             elevated_count,
             no_topic_count,
@@ -697,18 +613,12 @@ class Orchestrator:
             reverse=True,
         )
 
-        max_markets = (
-            config.MAX_MISTRAL_CALLS_PER_CYCLE
-            * config.MISTRAL_BATCH_SIZE
-        )
+        max_markets = config.MAX_MISTRAL_CALLS_PER_CYCLE * config.MISTRAL_BATCH_SIZE
 
-        flagged = flagged[
-            :max_markets
-        ]
+        flagged = flagged[:max_markets]
 
         logger.info(
-            "🚨 %s markets flagged for Mistral "
-            "(score ≥ %s, top-%s by score)",
+            "🚨 %s markets flagged for Mistral (score ≥ %s, top-%s by score)",
             len(flagged),
             config.MISTRAL_THRESHOLD,
             max_markets,
@@ -720,21 +630,13 @@ class Orchestrator:
         anomaly_map: Dict[
             str,
             Dict[str, Any],
-        ] = {
-            result["market_id"]: result
-            for result in anomaly_results
-            if "market_id" in result
-        }
+        ] = {result["market_id"]: result for result in anomaly_results if "market_id" in result}
 
         if flagged:
-            n_calls = -(
-                -len(flagged)
-                // config.MISTRAL_BATCH_SIZE
-            )
+            n_calls = -(-len(flagged) // config.MISTRAL_BATCH_SIZE)
 
             logger.info(
-                "🧠 Step 6: Mistral (%s markets, "
-                "~%s API calls, confirm ≥ %s)...",
+                "🧠 Step 6: Mistral (%s markets, ~%s API calls, confirm ≥ %s)...",
                 len(flagged),
                 n_calls,
                 config.MISTRAL_CONFIRM_MIN,
@@ -742,38 +644,25 @@ class Orchestrator:
 
             mistral_items = [
                 (
-                    snapshot_map[
-                        result["market_id"]
-                    ],
+                    snapshot_map[result["market_id"]],
                     result,
                 )
                 for result in flagged
-                if result.get(
-                    "market_id"
-                )
-                in snapshot_map
+                if result.get("market_id") in snapshot_map
             ]
 
-            mistral_results = (
-                self.analyzer.analyze_batch(
-                    mistral_items
-                )
-            )
+            mistral_results = self.analyzer.analyze_batch(mistral_items)
 
             for result in mistral_results:
                 if (
-                    result.get(
-                        "anomaly_detected"
-                    )
+                    result.get("anomaly_detected")
                     and result.get(
                         "confidence_score",
                         0,
                     )
                     >= config.MISTRAL_CONFIRM_MIN
                 ):
-                    confirmed.append(
-                        result
-                    )
+                    confirmed.append(result)
 
         logger.info(
             "✅ %s signals confirmed by Mistral",
@@ -783,42 +672,21 @@ class Orchestrator:
         # ── Step 7: CLOB Trade Analysis ─────────────────────────────
         trade_results = {}
 
-        if (
-            confirmed
-            and config.TRADE_ANALYSIS_ENABLED
-        ):
+        if confirmed and config.TRADE_ANALYSIS_ENABLED:
             confirmed_snapshots = [
-                snapshot_map[
-                    result[
-                        "market_id"
-                    ]
-                ]
+                snapshot_map[result["market_id"]]
                 for result in confirmed
-                if result.get(
-                    "market_id"
-                )
-                in snapshot_map
+                if result.get("market_id") in snapshot_map
             ]
 
-            confirmed_snapshots = (
-                confirmed_snapshots[
-                    : config.MAX_TRADE_ANALYSIS_PER_CYCLE
-                ]
-            )
+            confirmed_snapshots = confirmed_snapshots[: config.MAX_TRADE_ANALYSIS_PER_CYCLE]
 
             logger.info(
-                "🐋 Step 7: CLOB trade analysis on "
-                "%s confirmed signals...",
-                len(
-                    confirmed_snapshots
-                ),
+                "🐋 Step 7: CLOB trade analysis on %s confirmed signals...",
+                len(confirmed_snapshots),
             )
 
-            trade_results = (
-                self.trader.analyze_batch(
-                    confirmed_snapshots
-                )
-            )
+            trade_results = self.trader.analyze_batch(confirmed_snapshots)
 
         # ── Step 8: Whale boost + Store + Notify ────────────────────
         signals = []
@@ -836,25 +704,19 @@ class Orchestrator:
                 {},
             )
 
-            trade_metrics = (
-                trade_results.get(
-                    market_id,
-                    {},
-                )
+            trade_metrics = trade_results.get(
+                market_id,
+                {},
             )
 
-            anomaly_result = (
-                anomaly_map.get(
-                    market_id,
-                    {},
-                )
+            anomaly_result = anomaly_map.get(
+                market_id,
+                {},
             )
 
-            result = (
-                self._apply_whale_boost(
-                    result,
-                    trade_metrics,
-                )
+            result = self._apply_whale_boost(
+                result,
+                trade_metrics,
             )
 
             is_new = self._process_signal(
@@ -869,31 +731,18 @@ class Orchestrator:
                 signals.append(result)
                 new_signals += 1
 
-                if trade_metrics.get(
-                    "suspicious"
-                ):
+                if trade_metrics.get("suspicious"):
                     whale_signals += 1
 
-        cycle_time = (
-            time.time()
-            - cycle_start
-        )
+        cycle_time = time.time() - cycle_start
 
         # ── Step 9: Performance check ───────────────────────────────
         perf_summary = {}
 
-        if (
-            self.cycle_count
-            % 10
-            == 0
-        ):
-            logger.info(
-                "📊 Step 9: Checking signal outcomes..."
-            )
+        if self.cycle_count % 10 == 0:
+            logger.info("📊 Step 9: Checking signal outcomes...")
 
-            perf_summary = (
-                self.tracker.check_outcomes()
-            )
+            perf_summary = self.tracker.check_outcomes()
 
             if (
                 perf_summary.get(
@@ -906,92 +755,52 @@ class Orchestrator:
                 )
                 > 0
             ):
-                db_stats = (
-                    self.store.get_stats()
-                )
+                db_stats = self.store.get_stats()
 
-                self.notifier.send_daily_report(
-                    db_stats
-                )
+                self.notifier.send_daily_report(db_stats)
 
-        db_stats = (
-            self.store.get_stats()
-        )
+        db_stats = self.store.get_stats()
 
         logger.info(
             "📦 DB: %s total | %s (24h) | %s unsent | 🐋 %s whale",
             db_stats["total_signals"],
             db_stats["signals_24h"],
-            db_stats[
-                "telegram_unsent"
-            ],
+            db_stats["telegram_unsent"],
             db_stats.get(
                 "whale_signals",
                 0,
             ),
         )
 
-        if (
-            db_stats.get(
-                "win_rate"
-            )
-            is not None
-        ):
+        if db_stats.get("win_rate") is not None:
             logger.info(
                 "📊 Performance: %sW / %sL | WR: %.0f%%",
                 db_stats["wins"],
                 db_stats["losses"],
-                db_stats["win_rate"]
-                * 100,
+                db_stats["win_rate"] * 100,
             )
 
         summary = {
             "cycle": self.cycle_count,
-            "timestamp": datetime.now(
-                timezone.utc
-            ).isoformat(),
-            "markets_fetched": len(
-                markets
-            ),
-            "snapshots_built": (
-                snapshots_raw_count
-            ),
-            "elite_pre_filtered": (
-                elite_filtered_count
-            ),
-            "snapshots_analyzed": len(
-                snapshots
-            ),
-            "blacklisted": len(
-                blacklisted
-            ),
-            "anomalies_detected": len(
-                flagged
-            ),
-            "mistral_confirmed": len(
-                confirmed
-            ),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "markets_fetched": len(markets),
+            "snapshots_built": (snapshots_raw_count),
+            "elite_pre_filtered": (elite_filtered_count),
+            "snapshots_analyzed": len(snapshots),
+            "blacklisted": len(blacklisted),
+            "anomalies_detected": len(flagged),
+            "mistral_confirmed": len(confirmed),
             "signals": signals,
-            "signal_count": (
-                new_signals
-            ),
-            "whale_signals": (
-                whale_signals
-            ),
-            "mistral_calls": (
-                self.analyzer.call_count
-            ),
-            "clob_calls": (
-                self.trader.call_count
-            ),
+            "signal_count": (new_signals),
+            "whale_signals": (whale_signals),
+            "mistral_calls": (self.analyzer.call_count),
+            "clob_calls": (self.trader.call_count),
             "cycle_time_sec": round(
                 cycle_time,
                 2,
             ),
             "db_stats": db_stats,
-            "perf_summary": (
-                perf_summary
-            ),
+            "perf_summary": (perf_summary),
         }
 
         logger.info(
@@ -1025,13 +834,8 @@ class Orchestrator:
             "Mode: Blacklist",
             config.POLL_INTERVAL_SEC,
             config.SIGNAL_DB_PATH,
-            (
-                "✅"
-                if config.TRADE_ANALYSIS_ENABLED
-                else "❌"
-            ),
-            config.MISTRAL_CONFIRM_MIN
-            * 100,
+            ("✅" if config.TRADE_ANALYSIS_ENABLED else "❌"),
+            config.MISTRAL_CONFIRM_MIN * 100,
         )
 
         cycle = 0
@@ -1041,11 +845,7 @@ class Orchestrator:
                 self.run_cycle()
                 cycle += 1
 
-                if (
-                    max_cycles
-                    and cycle
-                    >= max_cycles
-                ):
+                if max_cycles and cycle >= max_cycles:
                     logger.info(
                         "Max cycles (%s) reached",
                         max_cycles,
@@ -1057,18 +857,12 @@ class Orchestrator:
                     config.POLL_INTERVAL_SEC,
                 )
 
-                time.sleep(
-                    config.POLL_INTERVAL_SEC
-                )
+                time.sleep(config.POLL_INTERVAL_SEC)
 
             except KeyboardInterrupt:
-                logger.info(
-                    "⛔ Stopped by user"
-                )
+                logger.info("⛔ Stopped by user")
 
-                final_stats = (
-                    self.store.get_stats()
-                )
+                final_stats = self.store.get_stats()
 
                 logger.info(
                     "📦 Final DB: %s",
@@ -1088,107 +882,50 @@ class Orchestrator:
 
 def main():
     logger.info("=" * 60)
-    logger.info(
-        "🧪 PolyAugur Orchestrator Test - Phase 15"
-    )
+    logger.info("🧪 PolyAugur Orchestrator Test - Phase 15")
     logger.info("=" * 60)
 
     orchestrator = Orchestrator()
 
-    print(
-        "\n[Test 1] Single cycle "
-        "(Phase 15 — Blacklist Mode)..."
-    )
+    print("\n[Test 1] Single cycle (Phase 15 — Blacklist Mode)...")
 
-    summary = (
-        orchestrator.run_cycle()
-    )
+    summary = orchestrator.run_cycle()
 
     print("\n✅ Cycle Summary:")
-    print(
-        "   Markets fetched:     "
-        f"{summary['markets_fetched']}"
-    )
-    print(
-        "   Snapshots built:     "
-        f"{summary['snapshots_built']}"
-    )
-    print(
-        "   Elite pre-filtered:  "
-        f"{summary['elite_pre_filtered']} eliminated"
-    )
-    print(
-        "   Blacklisted:         "
-        f"{summary.get('blacklisted', 0)} excluded"
-    )
-    print(
-        "   Snapshots analyzed:  "
-        f"{summary['snapshots_analyzed']}"
-    )
-    print(
-        "   Anomalies flagged:   "
-        f"{summary['anomalies_detected']}"
-    )
-    print(
-        "   Mistral confirmed:   "
-        f"{summary['mistral_confirmed']}"
-    )
-    print(
-        "   New signals:         "
-        f"{summary['signal_count']}"
-    )
-    print(
-        "   🐋 Whale signals:    "
-        f"{summary['whale_signals']}"
-    )
-    print(
-        "   Mistral calls:       "
-        f"{summary['mistral_calls']}"
-    )
-    print(
-        "   CLOB calls:          "
-        f"{summary['clob_calls']}"
-    )
-    print(
-        "   Cycle time:          "
-        f"{summary['cycle_time_sec']}s"
-    )
-    print(
-        "   DB stats:            "
-        f"{summary['db_stats']}"
-    )
+    print(f"   Markets fetched:     {summary['markets_fetched']}")
+    print(f"   Snapshots built:     {summary['snapshots_built']}")
+    print(f"   Elite pre-filtered:  {summary['elite_pre_filtered']} eliminated")
+    print(f"   Blacklisted:         {summary.get('blacklisted', 0)} excluded")
+    print(f"   Snapshots analyzed:  {summary['snapshots_analyzed']}")
+    print(f"   Anomalies flagged:   {summary['anomalies_detected']}")
+    print(f"   Mistral confirmed:   {summary['mistral_confirmed']}")
+    print(f"   New signals:         {summary['signal_count']}")
+    print(f"   🐋 Whale signals:    {summary['whale_signals']}")
+    print(f"   Mistral calls:       {summary['mistral_calls']}")
+    print(f"   CLOB calls:          {summary['clob_calls']}")
+    print(f"   Cycle time:          {summary['cycle_time_sec']}s")
+    print(f"   DB stats:            {summary['db_stats']}")
 
     if summary["signals"]:
         print("\n🚨 New signals:")
 
-        for signal in summary[
-            "signals"
-        ]:
+        for signal in summary["signals"]:
             boost = signal.get(
                 "confidence_boost",
                 0,
             )
 
-            boost_str = (
-                f" (↑{boost:.0%})"
-                if boost > 0
-                else ""
-            )
+            boost_str = f" (↑{boost:.0%})" if boost > 0 else ""
 
-            anomaly_score = (
+            anomaly_score = signal.get(
+                "anomaly_score",
                 signal.get(
-                    "anomaly_score",
-                    signal.get(
-                        "score",
-                        0.0,
-                    ),
-                )
+                    "score",
+                    0.0,
+                ),
             )
 
-            print(
-                "   • "
-                f"{signal.get('question', '')[:60]}"
-            )
+            print(f"   • {signal.get('question', '')[:60]}")
 
             print(
                 "     Trade: "
@@ -1203,14 +940,10 @@ def main():
             )
 
     else:
-        print(
-            "\n   No new signals this cycle"
-        )
+        print("\n   No new signals this cycle")
 
     print("\n" + "=" * 60)
-    print(
-        "✅ Phase 15 Orchestrator: PASSED"
-    )
+    print("✅ Phase 15 Orchestrator: PASSED")
     print("=" * 60)
 
 

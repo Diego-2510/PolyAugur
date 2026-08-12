@@ -12,12 +12,11 @@ import config
 
 logger = logging.getLogger(__name__)
 
-TRADE_EMOJI = {'BUY_YES': '🟢', 'BUY_NO': '🔴', 'HOLD': '🟡'}
-RISK_EMOJI  = {'low': '🟢', 'medium': '🟡', 'high': '🔴'}
+TRADE_EMOJI = {"BUY_YES": "🟢", "BUY_NO": "🔴", "HOLD": "🟡"}
+RISK_EMOJI = {"low": "🟢", "medium": "🟡", "high": "🔴"}
 
 
 class TelegramNotifier:
-
     BASE_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
     def __init__(self):
@@ -31,33 +30,33 @@ class TelegramNotifier:
             logger.info(f"📱 TelegramNotifier ready (chat_id={self.chat_id})")
 
     def _format_signal(self, signal: Dict[str, Any]) -> str:
-        trade = signal.get('recommended_trade', 'HOLD')
-        conf = signal.get('confidence_score', 0.0)
-        conf_raw = signal.get('confidence_raw', conf)
-        conf_boost = signal.get('confidence_boost', 0.0)
-        risk = signal.get('risk_level', 'medium')
-        yes_price = signal.get('yes_price', 0.5)
-        volume = signal.get('volume_24hr', 0)
-        spike = signal.get('spike_ratio', 1.0)
-        question = signal.get('question', 'Unknown')[:80]
-        reasoning = signal.get('reasoning', '')[:180]
-        holding = signal.get('holding_period_hours', 0)
-        position = signal.get('recommended_position_size_pct', 0.0)
-        days_to_close = signal.get('days_to_close', '?')
-        anomaly_type = signal.get('anomaly_type', 'unknown')
-        detected_at = signal.get('detected_at', '')[:16].replace('T', ' ')
+        trade = signal.get("recommended_trade", "HOLD")
+        conf = signal.get("confidence_score", 0.0)
+        conf_raw = signal.get("confidence_raw", conf)
+        conf_boost = signal.get("confidence_boost", 0.0)
+        risk = signal.get("risk_level", "medium")
+        yes_price = signal.get("yes_price", 0.5)
+        volume = signal.get("volume_24hr", 0)
+        spike = signal.get("spike_ratio", 1.0)
+        question = signal.get("question", "Unknown")[:80]
+        reasoning = signal.get("reasoning", "")[:180]
+        holding = signal.get("holding_period_hours", 0)
+        position = signal.get("recommended_position_size_pct", 0.0)
+        days_to_close = signal.get("days_to_close", "?")
+        anomaly_type = signal.get("anomaly_type", "unknown")
+        detected_at = signal.get("detected_at", "")[:16].replace("T", " ")
 
         # Whale data
-        whale_count = signal.get('whale_count', 0)
-        top_wallet = signal.get('top_wallet_pct', 0)
-        dir_bias = signal.get('directional_bias', 0.5)
-        dom_side = signal.get('dominant_side', 'NONE')
-        burst = signal.get('burst_score', 1.0)
-        suspicious = signal.get('trade_suspicious', False)
-        unique_wallets = signal.get('unique_wallets', 0)
+        whale_count = signal.get("whale_count", 0)
+        top_wallet = signal.get("top_wallet_pct", 0)
+        dir_bias = signal.get("directional_bias", 0.5)
+        dom_side = signal.get("dominant_side", "NONE")
+        burst = signal.get("burst_score", 1.0)
+        suspicious = signal.get("trade_suspicious", False)
+        unique_wallets = signal.get("unique_wallets", 0)
 
-        trade_e = TRADE_EMOJI.get(trade, '⚪')
-        risk_e = RISK_EMOJI.get(risk, '⚪')
+        trade_e = TRADE_EMOJI.get(trade, "⚪")
+        risk_e = RISK_EMOJI.get(risk, "⚪")
 
         # Header: whale alert vs normal
         if suspicious:
@@ -89,32 +88,37 @@ class TelegramNotifier:
 
         # Whale section (only if data exists)
         if whale_count > 0 or suspicious:
-            lines.extend([
-                "",
-                "🐋 *On\\-Chain Intelligence:*",
-                f"   Whales: `{whale_count}` \\| Wallets: `{unique_wallets}`",
-                f"   Top wallet: `{top_wallet:.0%}` of volume",
-                f"   Direction: `{dir_bias:.0%} {dom_side}`",
-                f"   Burst: `{burst:.1f}x` last hour",
-            ])
+            lines.extend(
+                [
+                    "",
+                    "🐋 *On\\-Chain Intelligence:*",
+                    f"   Whales: `{whale_count}` \\| Wallets: `{unique_wallets}`",
+                    f"   Top wallet: `{top_wallet:.0%}` of volume",
+                    f"   Direction: `{dir_bias:.0%} {dom_side}`",
+                    f"   Burst: `{burst:.1f}x` last hour",
+                ]
+            )
             if suspicious:
-                reasons = signal.get('suspicious_reasons', [])
+                reasons = signal.get("suspicious_reasons", [])
                 if isinstance(reasons, str):
                     import json
+
                     try:
                         reasons = json.loads(reasons)
                     except Exception:
                         reasons = [reasons]
                 if reasons:
-                    flags = ", ".join(r.replace('_', ' ') for r in reasons[:3])
+                    flags = ", ".join(r.replace("_", " ") for r in reasons[:3])
                     lines.append(f"   ⚠️ `{flags}`")
 
-        lines.extend([
-            "",
-            f"💬 _{reasoning}_",
-            "",
-            f"🕐 `{detected_at} UTC`",
-        ])
+        lines.extend(
+            [
+                "",
+                f"💬 _{reasoning}_",
+                "",
+                f"🕐 `{detected_at} UTC`",
+            ]
+        )
 
         return "\n".join(lines)
 
@@ -132,14 +136,14 @@ class TelegramNotifier:
                     "chat_id": self.chat_id,
                     "text": message,
                     "parse_mode": "MarkdownV2",
-                    "disable_web_page_preview": True
+                    "disable_web_page_preview": True,
                 },
-                timeout=10
+                timeout=10,
             )
             if resp.status_code == 200:
                 logger.info(f"📱 Telegram sent: {signal.get('question', '')[:45]}")
                 return True
-            elif resp.status_code == 400 and 'parse' in resp.text.lower():
+            elif resp.status_code == 400 and "parse" in resp.text.lower():
                 return self._send_plain(signal)
             else:
                 logger.error(f"Telegram API error {resp.status_code}: {resp.text[:100]}")
@@ -149,12 +153,12 @@ class TelegramNotifier:
             return False
 
     def _send_plain(self, signal: Dict[str, Any]) -> bool:
-        trade = signal.get('recommended_trade', 'HOLD')
-        conf = signal.get('confidence_score', 0.0)
-        question = signal.get('question', 'Unknown')[:80]
-        reasoning = signal.get('reasoning', '')[:150]
-        whale_count = signal.get('whale_count', 0)
-        suspicious = signal.get('trade_suspicious', False)
+        trade = signal.get("recommended_trade", "HOLD")
+        conf = signal.get("confidence_score", 0.0)
+        question = signal.get("question", "Unknown")[:80]
+        reasoning = signal.get("reasoning", "")[:150]
+        whale_count = signal.get("whale_count", 0)
+        suspicious = signal.get("trade_suspicious", False)
 
         whale_tag = "🐋 WHALE " if suspicious else ""
 
@@ -172,7 +176,7 @@ class TelegramNotifier:
             resp = requests.post(
                 url,
                 json={"chat_id": self.chat_id, "text": message, "disable_web_page_preview": True},
-                timeout=10
+                timeout=10,
             )
             return resp.status_code == 200
         except Exception:
@@ -183,7 +187,7 @@ class TelegramNotifier:
         if not self.enabled:
             return False
 
-        win_rate = stats.get('win_rate')
+        win_rate = stats.get("win_rate")
         wr_str = f"{win_rate:.0%}" if win_rate is not None else "N/A"
 
         msg = (
@@ -200,9 +204,13 @@ class TelegramNotifier:
         try:
             resp = requests.post(
                 url,
-                json={"chat_id": self.chat_id, "text": msg, "parse_mode": "MarkdownV2",
-                      "disable_web_page_preview": True},
-                timeout=10
+                json={
+                    "chat_id": self.chat_id,
+                    "text": msg,
+                    "parse_mode": "MarkdownV2",
+                    "disable_web_page_preview": True,
+                },
+                timeout=10,
             )
             return resp.status_code == 200
         except Exception:

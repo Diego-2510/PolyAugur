@@ -55,18 +55,18 @@ class WalletProfile:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'address': self.address[:10] + '...',
-            'classification': self.classification,
-            'confidence': round(self.confidence, 2),
-            'win_rate': round(self.win_rate, 3),
-            'total_positions': self.total_positions,
-            'resolved_positions': self.resolved_positions,
-            'wins': self.wins,
-            'losses': self.losses,
-            'account_age_days': self.account_age_days,
-            'total_invested': round(self.total_invested, 2),
-            'avg_position_size': round(self.avg_position_size, 2),
-            'reasons': self.reasons,
+            "address": self.address[:10] + "...",
+            "classification": self.classification,
+            "confidence": round(self.confidence, 2),
+            "win_rate": round(self.win_rate, 3),
+            "total_positions": self.total_positions,
+            "resolved_positions": self.resolved_positions,
+            "wins": self.wins,
+            "losses": self.losses,
+            "account_age_days": self.account_age_days,
+            "total_invested": round(self.total_invested, 2),
+            "avg_position_size": round(self.avg_position_size, 2),
+            "reasons": self.reasons,
         }
 
 
@@ -115,7 +115,12 @@ class WalletProfiler:
             # Try Gamma positions endpoint
             resp = self.session.get(
                 f"{config.GAMMA_API_BASE}/positions",
-                params={"user": address, "limit": "200", "sortBy": "createdAt", "sortOrder": "desc"},
+                params={
+                    "user": address,
+                    "limit": "200",
+                    "sortBy": "createdAt",
+                    "sortOrder": "desc",
+                },
                 timeout=10,
             )
             self.call_count += 1
@@ -124,8 +129,8 @@ class WalletProfiler:
                 data = resp.json()
                 if isinstance(data, list):
                     return data
-                if isinstance(data, dict) and 'positions' in data:
-                    return data['positions']
+                if isinstance(data, dict) and "positions" in data:
+                    return data["positions"]
                 return []
 
             logger.debug(f"Positions API {resp.status_code} for {address[:10]}")
@@ -166,15 +171,15 @@ class WalletProfiler:
         for pos in positions:
             try:
                 # Parse position data
-                size = float(pos.get('size', pos.get('amount', 0)))
-                price = float(pos.get('avgPrice', pos.get('price', 0.5)))
+                size = float(pos.get("size", pos.get("amount", 0)))
+                price = float(pos.get("avgPrice", pos.get("price", 0.5)))
                 invested = size * price
                 profile.total_invested += invested
                 profile.max_position_size = max(profile.max_position_size, invested)
 
                 # Outcome
-                outcome = pos.get('outcome', pos.get('resolved', None))
-                cashout = float(pos.get('cashoutAmount', pos.get('payout', 0)))
+                outcome = pos.get("outcome", pos.get("resolved", None))
+                cashout = float(pos.get("cashoutAmount", pos.get("payout", 0)))
 
                 if outcome is not None or cashout > 0:
                     profile.resolved_positions += 1
@@ -186,12 +191,12 @@ class WalletProfiler:
                         profile.losses += 1
 
                 # Timestamps
-                ts_raw = pos.get('createdAt', pos.get('timestamp', ''))
+                ts_raw = pos.get("createdAt", pos.get("timestamp", ""))
                 if ts_raw:
                     if isinstance(ts_raw, (int, float)):
                         ts = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
                     else:
-                        ts = datetime.fromisoformat(str(ts_raw).replace('Z', '+00:00'))
+                        ts = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
                     timestamps.append(ts)
 
             except (ValueError, TypeError):
@@ -225,10 +230,14 @@ class WalletProfiler:
             reasons.append(f"new_account_{profile.account_age_days}d_large_bets")
 
         # High win rate with enough history
-        if (profile.win_rate >= self.INSIDER_WIN_RATE
-                and profile.resolved_positions >= self.INSIDER_MIN_POSITIONS):
+        if (
+            profile.win_rate >= self.INSIDER_WIN_RATE
+            and profile.resolved_positions >= self.INSIDER_MIN_POSITIONS
+        ):
             insider_score += 2
-            reasons.append(f"high_win_rate_{profile.win_rate:.0%}_over_{profile.resolved_positions}_bets")
+            reasons.append(
+                f"high_win_rate_{profile.win_rate:.0%}_over_{profile.resolved_positions}_bets"
+            )
 
         # Very new account (< 7 days) with any whale trade
         if profile.account_age_days < 7 and profile.max_position_size >= 2_000:
@@ -242,9 +251,11 @@ class WalletProfiler:
             return profile
 
         # ── Check SMART_MONEY ────────────────────────────────────────
-        if (profile.win_rate >= self.SMART_MONEY_WIN_RATE
-                and profile.total_invested >= self.SMART_MONEY_MIN_INVESTED
-                and profile.resolved_positions >= self.SMART_MONEY_MIN_POSITIONS):
+        if (
+            profile.win_rate >= self.SMART_MONEY_WIN_RATE
+            and profile.total_invested >= self.SMART_MONEY_MIN_INVESTED
+            and profile.resolved_positions >= self.SMART_MONEY_MIN_POSITIONS
+        ):
             profile.classification = "SMART_MONEY"
             profile.confidence = 0.7
             profile.reasons = [
@@ -255,8 +266,10 @@ class WalletProfiler:
             return profile
 
         # ── Check GAMBLER ────────────────────────────────────────────
-        if (profile.win_rate < self.GAMBLER_WIN_RATE
-                and profile.resolved_positions >= self.GAMBLER_MIN_POSITIONS):
+        if (
+            profile.win_rate < self.GAMBLER_WIN_RATE
+            and profile.resolved_positions >= self.GAMBLER_MIN_POSITIONS
+        ):
             profile.classification = "GAMBLER"
             profile.confidence = 0.6
             profile.reasons = [
@@ -322,21 +335,23 @@ class WalletProfiler:
         for address, volume in top:
             time.sleep(0.3)  # Rate limit
             profile = self.profile_wallet(address)
-            profiles.append({
-                'address': address[:10] + '...',
-                'volume': round(volume, 2),
-                'classification': profile.classification,
-                'win_rate': round(profile.win_rate, 3),
-                'account_age_days': profile.account_age_days,
-                'total_positions': profile.total_positions,
-                'reasons': profile.reasons,
-            })
+            profiles.append(
+                {
+                    "address": address[:10] + "...",
+                    "volume": round(volume, 2),
+                    "classification": profile.classification,
+                    "win_rate": round(profile.win_rate, 3),
+                    "account_age_days": profile.account_age_days,
+                    "total_positions": profile.total_positions,
+                    "reasons": profile.reasons,
+                }
+            )
             classifications[profile.classification] += 1
 
         # Compute signal adjustment
-        insider_count = classifications.get('INSIDER', 0)
-        smart_money_count = classifications.get('SMART_MONEY', 0)
-        gambler_count = classifications.get('GAMBLER', 0)
+        insider_count = classifications.get("INSIDER", 0)
+        smart_money_count = classifications.get("SMART_MONEY", 0)
+        gambler_count = classifications.get("GAMBLER", 0)
 
         confidence_adjustment = 0.0
         adjustment_reasons = []
@@ -347,20 +362,22 @@ class WalletProfiler:
 
         if smart_money_count > 0:
             confidence_adjustment += smart_money_count * 0.03
-            adjustment_reasons.append(f"{smart_money_count}x SMART_MONEY (+{smart_money_count * 0.03:.0%})")
+            adjustment_reasons.append(
+                f"{smart_money_count}x SMART_MONEY (+{smart_money_count * 0.03:.0%})"
+            )
 
         if gambler_count > 0 and insider_count == 0:
             confidence_adjustment -= gambler_count * 0.05
             adjustment_reasons.append(f"{gambler_count}x GAMBLER ({gambler_count * -0.05:+.0%})")
 
         return {
-            'top_wallets': profiles,
-            'classifications': dict(classifications),
-            'insider_count': insider_count,
-            'smart_money_count': smart_money_count,
-            'gambler_count': gambler_count,
-            'confidence_adjustment': round(confidence_adjustment, 3),
-            'adjustment_reasons': adjustment_reasons,
+            "top_wallets": profiles,
+            "classifications": dict(classifications),
+            "insider_count": insider_count,
+            "smart_money_count": smart_money_count,
+            "gambler_count": gambler_count,
+            "confidence_adjustment": round(confidence_adjustment, 3),
+            "adjustment_reasons": adjustment_reasons,
         }
 
     def reset_cycle_counters(self):
@@ -387,7 +404,9 @@ def main():
     gambler.total_invested = 15000
     gambler.account_age_days = 180
     gambler = profiler._classify(gambler)
-    print(f"   {'✅' if gambler.classification == 'GAMBLER' else '❌'} Gambler: {gambler.classification} | WR={gambler.win_rate:.0%} | {gambler.reasons}")
+    print(
+        f"   {'✅' if gambler.classification == 'GAMBLER' else '❌'} Gambler: {gambler.classification} | WR={gambler.win_rate:.0%} | {gambler.reasons}"
+    )
 
     # Simulate INSIDER (new account + big bets)
     insider = WalletProfile("0xINSIDER")
@@ -398,7 +417,9 @@ def main():
     insider.max_position_size = 20000
     insider.account_age_days = 12
     insider = profiler._classify(insider)
-    print(f"   {'✅' if insider.classification == 'INSIDER' else '❌'} Insider: {insider.classification} | WR={insider.win_rate:.0%} | {insider.reasons}")
+    print(
+        f"   {'✅' if insider.classification == 'INSIDER' else '❌'} Insider: {insider.classification} | WR={insider.win_rate:.0%} | {insider.reasons}"
+    )
 
     # Simulate SMART_MONEY
     smart = WalletProfile("0xSMART")
@@ -408,7 +429,9 @@ def main():
     smart.total_invested = 120000
     smart.account_age_days = 365
     smart = profiler._classify(smart)
-    print(f"   {'✅' if smart.classification == 'SMART_MONEY' else '❌'} Smart Money: {smart.classification} | WR={smart.win_rate:.0%} | {smart.reasons}")
+    print(
+        f"   {'✅' if smart.classification == 'SMART_MONEY' else '❌'} Smart Money: {smart.classification} | WR={smart.win_rate:.0%} | {smart.reasons}"
+    )
 
     # Simulate REGULAR
     regular = WalletProfile("0xREGULAR")
@@ -418,7 +441,9 @@ def main():
     regular.total_invested = 5000
     regular.account_age_days = 90
     regular = profiler._classify(regular)
-    print(f"   {'✅' if regular.classification == 'REGULAR' else '❌'} Regular: {regular.classification} | WR={regular.win_rate:.0%} | {regular.reasons}")
+    print(
+        f"   {'✅' if regular.classification == 'REGULAR' else '❌'} Regular: {regular.classification} | WR={regular.win_rate:.0%} | {regular.reasons}"
+    )
 
     # Test 2: Aggregated confidence adjustment
     print("\n[Test 2] Confidence adjustment logic...")
@@ -438,7 +463,7 @@ def main():
     print(f"   Confidence adj:  {result['confidence_adjustment']:+.0%}")
     print(f"   Reasons:         {result['adjustment_reasons']}")
 
-    adj = result['confidence_adjustment']
+    adj = result["confidence_adjustment"]
     # 1 insider (+5%) + 1 gambler (0% because insider present) = +5%
     print(f"   {'✅' if adj > 0 else '❌'} Net positive (insider outweighs gambler)")
 

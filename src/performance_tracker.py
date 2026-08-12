@@ -39,10 +39,7 @@ class PerformanceTracker:
     def _fetch_market_state(self, market_id: str) -> Optional[Dict[str, Any]]:
         """Fetch current market state from Gamma API."""
         try:
-            resp = self.session.get(
-                f"{config.GAMMA_API_BASE}/markets/{market_id}",
-                timeout=10
-            )
+            resp = self.session.get(f"{config.GAMMA_API_BASE}/markets/{market_id}", timeout=10)
             if resp.status_code == 200:
                 return resp.json()
             return None
@@ -55,20 +52,21 @@ class PerformanceTracker:
         Determine win/loss for a signal based on market state.
         Returns dict with outcome, outcome_price, pnl_pct.
         """
-        trade = signal.get('trade', 'HOLD')
-        entry_price = signal.get('yes_price', 0.5)
+        trade = signal.get("trade", "HOLD")
+        entry_price = signal.get("yes_price", 0.5)
 
         # Check if market is resolved
-        resolved = market.get('resolved', False)
-        closed = market.get('closed', False)
+        resolved = market.get("resolved", False)
+        closed = market.get("closed", False)
 
         if not (resolved or closed):
-            return {'outcome': 'pending', 'outcome_price': None, 'pnl_pct': None}
+            return {"outcome": "pending", "outcome_price": None, "pnl_pct": None}
 
         # Get outcome price
-        outcome_prices = market.get('outcomePrices', '[]')
+        outcome_prices = market.get("outcomePrices", "[]")
         if isinstance(outcome_prices, str):
             import json
+
             try:
                 outcome_prices = json.loads(outcome_prices)
             except Exception:
@@ -78,42 +76,38 @@ class PerformanceTracker:
             final_yes = float(outcome_prices[0])
         else:
             # Try current yes price
-            final_yes = float(market.get('bestAsk', market.get('yes_price', 0.5)))
+            final_yes = float(market.get("bestAsk", market.get("yes_price", 0.5)))
 
         # Determine outcome
-        if trade == 'BUY_YES':
+        if trade == "BUY_YES":
             if final_yes >= 0.95:  # Resolved YES
                 pnl_pct = round((1.0 - entry_price) / entry_price, 4)
-                outcome = 'win'
+                outcome = "win"
             elif final_yes <= 0.05:  # Resolved NO
                 pnl_pct = -1.0
-                outcome = 'loss'
+                outcome = "loss"
             else:
                 pnl_pct = round((final_yes - entry_price) / entry_price, 4)
-                outcome = 'win' if pnl_pct > 0 else 'loss'
+                outcome = "win" if pnl_pct > 0 else "loss"
 
-        elif trade == 'BUY_NO':
+        elif trade == "BUY_NO":
             no_entry = 1.0 - entry_price
             if final_yes <= 0.05:  # Resolved NO → we win
                 pnl_pct = round((1.0 - no_entry) / no_entry, 4) if no_entry > 0 else 0
-                outcome = 'win'
+                outcome = "win"
             elif final_yes >= 0.95:  # Resolved YES → we lose
                 pnl_pct = -1.0
-                outcome = 'loss'
+                outcome = "loss"
             else:
                 current_no = 1.0 - final_yes
                 pnl_pct = round((current_no - no_entry) / no_entry, 4) if no_entry > 0 else 0
-                outcome = 'win' if pnl_pct > 0 else 'loss'
+                outcome = "win" if pnl_pct > 0 else "loss"
 
         else:  # HOLD
             pnl_pct = 0.0
-            outcome = 'neutral'
+            outcome = "neutral"
 
-        return {
-            'outcome': outcome,
-            'outcome_price': final_yes,
-            'pnl_pct': pnl_pct
-        }
+        return {"outcome": outcome, "outcome_price": final_yes, "pnl_pct": pnl_pct}
 
     def check_outcomes(self) -> Dict[str, Any]:
         """
@@ -125,7 +119,7 @@ class PerformanceTracker:
 
         if not pending:
             logger.info("📊 Performance: no pending outcomes to check")
-            return {'checked': 0, 'wins': 0, 'losses': 0, 'still_pending': 0}
+            return {"checked": 0, "wins": 0, "losses": 0, "still_pending": 0}
 
         logger.info(f"📊 Checking {len(pending)} pending signal outcomes...")
 
@@ -134,7 +128,7 @@ class PerformanceTracker:
         still_pending = 0
 
         for signal in pending:
-            market_id = signal.get('market_id', '')
+            market_id = signal.get("market_id", "")
             market = self._fetch_market_state(market_id)
 
             if not market:
@@ -143,25 +137,25 @@ class PerformanceTracker:
 
             result = self._resolve_outcome(signal, market)
 
-            if result['outcome'] == 'pending':
+            if result["outcome"] == "pending":
                 still_pending += 1
                 continue
 
             self.store.update_outcome(
-                row_id=signal['id'],
-                outcome=result['outcome'],
-                outcome_price=result['outcome_price'],
-                pnl_pct=result['pnl_pct']
+                row_id=signal["id"],
+                outcome=result["outcome"],
+                outcome_price=result["outcome_price"],
+                pnl_pct=result["pnl_pct"],
             )
 
-            if result['outcome'] == 'win':
+            if result["outcome"] == "win":
                 wins += 1
-                emoji = '✅'
-            elif result['outcome'] == 'loss':
+                emoji = "✅"
+            elif result["outcome"] == "loss":
                 losses += 1
-                emoji = '❌'
+                emoji = "❌"
             else:
-                emoji = '⚪'
+                emoji = "⚪"
 
             logger.info(
                 f"{emoji} Signal #{signal['id']}: {signal.get('question', '')[:40]} | "
@@ -169,17 +163,17 @@ class PerformanceTracker:
             )
 
         summary = {
-            'checked': len(pending),
-            'wins': wins,
-            'losses': losses,
-            'still_pending': still_pending,
-            'win_rate': round(wins / (wins + losses), 3) if (wins + losses) > 0 else None
+            "checked": len(pending),
+            "wins": wins,
+            "losses": losses,
+            "still_pending": still_pending,
+            "win_rate": round(wins / (wins + losses), 3) if (wins + losses) > 0 else None,
         }
 
         logger.info(
-            f"📊 Outcome check: {wins}W / {losses}L "
-            f"(WR: {summary['win_rate']:.0%})" if summary['win_rate'] else
-            f"📊 Outcome check: {still_pending} still pending"
+            f"📊 Outcome check: {wins}W / {losses}L (WR: {summary['win_rate']:.0%})"
+            if summary["win_rate"]
+            else f"📊 Outcome check: {still_pending} still pending"
         )
 
         return summary
@@ -187,6 +181,7 @@ class PerformanceTracker:
 
 def main():
     import logging
+
     logging.basicConfig(level=logging.INFO)
 
     print("=" * 60)

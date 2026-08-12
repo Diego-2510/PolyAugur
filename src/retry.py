@@ -30,6 +30,7 @@ def retry(
         exceptions: Tuple of exception types to catch
         on_retry: Log message prefix on retry
     """
+
     def decorator(func):
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
@@ -40,16 +41,16 @@ def retry(
                 except exceptions as e:
                     last_exception = e
                     if attempt < max_retries:
-                        delay = min(backoff_base * (2 ** attempt), backoff_max)
+                        delay = min(backoff_base * (2**attempt), backoff_max)
                         logger.warning(
-                            f"⚠️ {on_retry} {func.__name__} attempt {attempt+1}/{max_retries} "
+                            f"⚠️ {on_retry} {func.__name__} attempt {attempt + 1}/{max_retries} "
                             f"failed: {e}. Retrying in {delay:.1f}s..."
                         )
                         time.sleep(delay)
                     else:
-                        logger.error(
-                            f"❌ {func.__name__} failed after {max_retries} retries: {e}"
-                        )
+                        logger.error(f"❌ {func.__name__} failed after {max_retries} retries: {e}")
             raise last_exception
+
         return wrapper
+
     return decorator
