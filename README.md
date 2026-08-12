@@ -1,290 +1,606 @@
-# 🔮 PolyAugur
+# PolyAugur
 
-**Polymarket Insider Signal Detection System**
+[![CI](https://github.com/Diego-2510/PolyAugur/actions/workflows/ci.yml/badge.svg)](https://github.com/Diego-2510/PolyAugur/actions/workflows/ci.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Detects anomalous trading activity on [Polymarket](https://polymarket.com) that may indicate informed/insider trading. Combines multi-layer statistical anomaly detection, LLM analysis (Mistral), on-chain trade intelligence (CLOB), wallet profiling, and real-time Telegram alerts.
+**Prediction-market anomaly detection and evaluation research system**
+
+PolyAugur is a research-oriented pipeline for screening Polymarket markets for unusual activity and information-sensitive scenarios. It combines Gamma API ingestion, rule-based anomaly scoring, optional LLM-assisted review with strict JSON-Schema validation, CLOB trade heuristics, SQLite persistence, reporting, and an offline evaluation harness.
+
+PolyAugur does **not** prove that insider trading occurred, does not execute trades, and does not present model confidence scores as calibrated probabilities.
+
+---
+
+## Why this project exists
+
+Prediction markets combine market microstructure, event-driven data, noisy public information, and external APIs. PolyAugur explores how to build a reproducible detection pipeline around those constraints while keeping the distinction between:
+
+- observed market data,
+- rule-based heuristics,
+- model-produced assessments,
+- and actual ground truth.
+
+The repository is structured as an engineering and evaluation project rather than a profitability claim.
 
 ---
 
 ## Architecture
 
+```text
+                    Polymarket Gamma API
+                            |
+                            v
+                 +----------------------+
+                 | Market ingestion     |
+                 | normalization        |
+                 | filtering            |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------------------+
+                 | Snapshot enrichment  |
+                 | derived baseline     |
+                 | real elapsed-time    |
+                 | change metrics       |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------------------+
+                 | Rule-based anomaly   |
+                 | scoring              |
+                 |                      |
+                 | volume               |
+                 | price/liquidity      |
+                 | topic heuristics     |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------------------+
+                 | LLM-assisted review  |
+                 | optional             |
+                 | batched              |
+                 | strict JSON Schema   |
+                 +----------+-----------+
+                            |
+                            v
+                 +----------------------+
+                 | CLOB trade analysis  |
+                 | concentration        |
+                 | directional bias     |
+                 | burst heuristics     |
+                 +----------+-----------+
+                            |
+                            v
+             +--------------+---------------+
+             |                              |
+             v                              v
+      SQLite persistence             Telegram / reports
+             |
+             v
+      Offline evaluation
+      precision / recall
+      Brier score / ECE
+      optional cost estimate
 ```
-Gamma API (10,000+ markets)
-    │
-    ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 1 — Elite Pre-Filter (quantitative, topic-agnostic)      │
-│  Spike ≥ 2.5x · Recency ≥ 15% · Horizon ≤ 90d                  │
-│  Blacklist: tweets, crypto prices, weather, sport excluded       │
-│  → score ≥ 0.45 passed to LLM                                   │
-└────────────────────────┬────────────────────────────────────────┘
-                         │  ~10–32 flagged markets
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 2 — Mistral LLM Validation (batched, 4/prompt)           │
-│  Structured JSON reasoning · Confidence ≥ 0.80 confirmed        │
-└────────────────────────┬────────────────────────────────────────┘
-                         │  ~1–5 confirmed signals
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  LAYER 3 — CLOB On-Chain Analysis + Wallet Profiling            │
-│  Whale detection · Wallet concentration · Directional bias      │
-│  Trader classification (INSIDER/SMART_MONEY/GAMBLER/REGULAR)    │
-│  → Confidence boost up to +15%                                  │
-└────────────────────────┬────────────────────────────────────────┘
-                         │
-                         ▼
-              SQLite  ·  Telegram  ·  HTML Dashboard
-```
-
-## Dashboard Preview
-
-<p align="center">
-  <img src="docs/dashboard.png" alt="PolyAugur Dashboard" width="900">
-</p>
-
-## Pipeline (9-Step Cycle)
-
-| Step | Component | Description |
-|------|-----------|-------------|
-| 1 | `data_fetcher.py` | Fetch active markets from Gamma API (paginated, sports filtered) |
-| 2 | `data_fetcher.py` | Build market snapshots with real baseline volumes |
-| 3 | `orchestrator.py` | Price velocity enrichment (cross-cycle delta tracking) |
-| 3.5 | `orchestrator.py` | Elite pre-filter: spike ≥ 2.5x, horizon ≤ 90d, recency ≥ 15% |
-| 4 | `anomaly_detector.py` | Multi-layer scoring + blacklist exclusion. Topic keywords boost score, no hard gate. |
-| 5 | `orchestrator.py` | Filter score ≥ 0.45, top-32 by score → LLM |
-| 6 | `mistral_analyzer.py` | Mistral LLM validation (batched 4/prompt, JSON-mode, whale context) |
-| 7 | `trade_analyzer.py` | CLOB on-chain trade analysis (whale detection, wallet concentration, burst timing) |
-| 8 | `orchestrator.py` | Whale confidence boost → deduplicate → store → Telegram notify |
-| 9 | `performance_tracker.py` | Automatic outcome resolution & P&L tracking (every 10 cycles) |
-
-## Detection Philosophy: Blacklist Mode
-
-**Phase 15** switched from a *whitelist* (only known insider topics allowed) to a *blacklist* (everything is analyzed except explicitly excluded categories).
-
-**Why:** Whitelist mode missed genuine signals when:
-- Polymarket titles contained Unicode dashes (`Fed Pause–Pause–Cut`) breaking keyword matching
-- New insider categories were not yet in the keyword list
-- Markets with unusual volume surges but no exact keyword match were silently dropped
-
-**Now:** Every market with a sufficient volume spike passes to Mistral — which makes the actual quality decision at ≥ 0.80 confidence. Topic keywords still exist as **score boosters**, giving known insider categories priority when the Mistral quota is full.
-
-### Blacklist (Hard Exclusions)
-
-These market types are excluded before scoring — no insider advantage is possible:
-
-- **Countable public activity**: tweet counts, post counts, follower counts
-- **Crypto price movements**: Bitcoin, Ethereum, altcoin price predictions
-- **Weather / natural events**: hurricanes, earthquakes, rainfall
-- **Entertainment**: Oscars, Grammys, box office results
-- **Sports outcomes**: Super Bowl, NBA Finals, World Series
-- **General sentiment / polling**: approval ratings, favorability polls
-
-### Topic Score Boosters (not gates)
-
-Topics that boost the anomaly score, giving them priority in the Mistral queue:
-
-**Critical (×1.40)** — Someone definitely knows first:
-- Military operations, airstrikes, troop deployments
-- Federal Reserve / FOMC rate decisions (`fed pause`, `fed cut`, `fomc`, `rate cut`, `next three decisions`, ...)
-- FDA drug approvals, emergency use authorizations
-- Executive decisions (pardons, nominations, cabinet firings)
-- Corporate M&A, CEO resignations, IPO dates
-- SEC/ETF rulings
-
-**Elevated (×1.15)** — Insider advantage is plausible:
-- Ceasefires, peace deals, hostage releases
-- Trade policy, tariffs, sanctions
-- DOJ indictments, criminal charges, impeachment
-- Government shutdowns, debt ceiling, budget deals
-- OPEC production decisions
-- Tech regulation, antitrust rulings
-- Short-horizon elections (≤ 35 days: mayoral, gubernatorial, runoff, snap)
-
-**No boost (×1.0)** — Everything else: still analyzed, Mistral decides.
-
-### Unicode-Safe Matching
-
-Polymarket titles frequently use Unicode punctuation (`–`, `—`, `…`). Phase 15 normalizes all titles before keyword matching:
-
-```
-"Will the Fed Pause–Pause–Cut in the next three decisions?"
-→ "will the fed pause pause cut in the next three decisions?"
-→ 'fed pause' ✓  'next three decisions' ✓
-```
-
-## Other Detection Layers
-
-- **Volume Spikes**: 2.5x–80x+ baseline surges (tiered scoring: 8x+ → max score)
-- **Price Conviction**: Extreme YES/NO prices with high volume-to-liquidity pressure
-- **Recency Surge**: 24h volume >60% of all-time → active surge multiplier ×1.40
-- **Time Horizon**: Markets >365 days penalized; ≤ 14 days get imminent boost ×1.25
-- **Whale Detection**: Trades >$5k, wallet concentration >40%, directional bias >85%
-- **Timing Bursts**: Last-hour volume vs historical hourly average (3x+ = suspicious)
-
-### Wallet Profiler
-
-Each whale's trading history is analyzed and classified:
-- 🧠 **INSIDER**: Win rate >65% OR new account with large bets → confidence +5%
-- 🐋 **SMART_MONEY**: Win rate >60%, significant capital → confidence +3%
-- 🎰 **GAMBLER**: Win rate <40% with ≥10 resolved bets → confidence −5%
-- 👤 **REGULAR**: Neutral impact
-
-## Quick Start
-
-```bash
-# Clone & setup
-git clone https://github.com/Diego-2510/PolyAugur.git
-cd PolyAugur
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-
-# Configure
-cp .env.example .env
-# Edit .env: add MISTRAL_API_KEY (required), TELEGRAM_BOT_TOKEN + CHAT_ID (optional)
-
-# Run
-python run.py --once          # Single detection cycle
-python run.py                 # Continuous polling (30s intervals)
-python run.py --cycles 10     # Run 10 cycles
-python run.py --stats         # Show DB statistics
-python run.py --check         # Check signal outcomes
-python run.py --health        # Pre-flight system check
-```
-
-## Dashboard & Exports
-
-```bash
-python -m src.dashboard                    # Last 24h signals (CLI table)
-python -m src.dashboard --hours 72         # Last 72h
-python -m src.dashboard --whales           # Only whale-flagged signals
-python -m src.dashboard --performance      # Win/loss breakdown
-python -m src.dashboard --export csv       # Export to CSV
-python -m src.dashboard --export html      # Export dark-mode HTML report
-python -m src.dashboard --all --export html # Full history HTML report
-```
-
-The HTML report is a self-contained dark-mode dashboard with:
-- Stats grid (total signals, win rate, avg confidence, signal volume)
-- Trade distribution bar (BUY YES / BUY NO / HOLD)
-- Interactive signal table with confidence bars, outcome badges, and direct Polymarket links
-
-## Telegram Alerts
-
-Signals are pushed to Telegram in real-time with:
-- Trade direction (BUY_YES / BUY_NO / HOLD)
-- Confidence score with whale boost indicator
-- Risk level, suggested holding period, position size
-- Anomaly type classification and market context
-- Daily performance reports with win rate
-
-Setup: Create a bot via [@BotFather](https://t.me/BotFather), get your chat ID, add both to `.env`.
-
-## Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `MISTRAL_API_KEY` | Yes | Mistral AI API key ([console.mistral.ai](https://console.mistral.ai)) |
-| `TELEGRAM_BOT_TOKEN` | No | Telegram bot token from @BotFather |
-| `TELEGRAM_CHAT_ID` | No | Telegram chat ID for signal alerts |
-| `SIGNAL_DB_PATH` | No | SQLite database path (default: `data/signals.db`) |
-
-## Cost Profile
-
-| Resource | Per Cycle | Per Day (24h @ 30s) |
-|----------|-----------|---------------------|
-| Gamma API | ~10 calls | ~2,880 calls (free) |
-| Mistral API | 2–8 calls | ~580–2,300 calls |
-| CLOB API | 0–10 calls | ~0–2,880 calls (free) |
-| **Estimated cost** | ~$0.005 | **~$2–5/day** |
-
-## Signal Flow Example
-
-```
-1. Gamma API returns 800 active markets (volume ≥ $30,000)
-2. Elite pre-filter: 800 → ~20 (spike ≥ 2.5x, recency ≥ 15%, horizon ≤ 90d)
-3. AnomalyDetector scores 20 → blacklist excludes 2 (tweets/crypto price)
-   → 18 scored: 🔴 5 critical-boosted, 🟡 4 elevated-boosted, ⚪ 9 no-topic
-4. Score ≥ 0.45: 12 flagged → top-32 sorted by score → Mistral (3 batches)
-5. Mistral confirms 4 (confidence ≥ 0.80)
-6. CLOB analyzes 4 → 1 has whale activity (3 whales, 89% directional BUY)
-7. Whale boost: confidence 0.82 → 0.92 (+0.10)
-8. Signal saved to SQLite, pushed to Telegram
-9. After market resolves: outcome checked, P&L recorded
-```
-
-## Key Design Decisions
-
-- **Blacklist over whitelist**: All markets pass unless explicitly excluded — no unknown insider category is silently dropped. Mistral is the quality gate.
-- **Unicode normalization**: Polymarket titles with `–`, `—`, `…` are normalized before all keyword matching — eliminates a class of silent false negatives.
-- **Topic boosting, not gating**: Known insider categories get higher scores (preferred Mistral queue position), but all markets above the score threshold reach Mistral.
-- **Mistral at 0.80**: Deliberately high confirmation threshold — fewer signals, higher precision.
-- **Wallet profiling**: Not all whales are equal — classifying traders by historical performance avoids boosting signals driven by known gamblers.
-- **Time horizon filter**: Markets >365 days penalized; ≤ 14 days get imminent boost.
-- **Whale confidence boost**: On-chain evidence increases confidence by up to +15%.
-- **Deduplication**: 4-hour window prevents repeat signals for the same market.
-- **Graceful degradation**: Rule-based fallback when Mistral API is unavailable.
-- **Production-ready**: systemd service file, health monitoring, exponential backoff, auto-restart on errors.
-
-## Project Structure
-
-```
-PolyAugur/
-├── run.py                      # Production entrypoint (--once, --cycles, --stats, --check, --health)
-├── config.py                   # All configuration & thresholds
-├── requirements.txt            # Python dependencies
-├── polyaugur.service           # systemd service for 24/7 deployment
-├── .env.example                # Environment variable template
-│
-├── src/
-│   ├── __init__.py
-│   ├── data_fetcher.py         # Gamma API client + snapshot builder
-│   ├── anomaly_detector.py     # Blacklist mode: scoring, Unicode normalization, topic boosters
-│   ├── mistral_analyzer.py     # Mistral LLM signal validation (batched, JSON-mode)
-│   ├── trade_analyzer.py       # CLOB on-chain whale detection
-│   ├── wallet_profiler.py      # Wallet history analysis & trader classification
-│   ├── signal_store.py         # SQLite persistence + dedup + schema migration
-│   ├── telegram_notifier.py    # Telegram push notifications + daily reports
-│   ├── performance_tracker.py  # Automatic outcome resolution & P&L tracking
-│   ├── dashboard.py            # CLI signal explorer + CSV/HTML export
-│   ├── health.py               # Pre-flight checks, health monitoring, error tracking
-│   └── retry.py                # Exponential backoff decorator for API resilience
-│
-├── data/                       # SQLite database (gitignored)
-├── logs/                       # Log files (gitignored)
-└── exports/                    # CSV/HTML exports (gitignored)
-```
-
-## Tech Stack
-
-- **Python 3.11+**
-- **Mistral AI** (`mistral-large-latest`) — LLM signal validation
-- **SQLite** — Signal persistence, deduplication, outcome tracking
-- **Telegram Bot API** — Real-time alerts & daily reports
-- **Polymarket Gamma API** — Market data (10,000+ markets)
-- **Polymarket CLOB API** — On-chain trade data (whale detection)
-
-## Acknowledgments
-
-This project was built during the **Mistral AI Hackathon** (March 2026) and uses the following open-source libraries and APIs:
-
-- **[Mistral AI](https://mistral.ai)** — LLM signal validation via `mistral-large-latest` ([mistralai](https://pypi.org/project/mistralai/) Python SDK)
-- **[Polymarket](https://polymarket.com)** — Market data via [Gamma API](https://gamma-api.polymarket.com) and [CLOB API](https://clob.polymarket.com)
-- **[Requests](https://docs.python-requests.org)** — HTTP client for API communication
-- **[NumPy](https://numpy.org)** — Numerical computations for anomaly scoring
-- **[python-dotenv](https://github.com/theskumar/python-dotenv)** — Environment variable management
-- **[Pandas](https://pandas.pydata.org)** — Data manipulation
-- **[Plotly](https://plotly.com/python/)** — Visualization library
-- **[Streamlit](https://streamlit.io)** — Web app framework
-
-## Author
-
-**Diego Ringleb** — Berlin, 2026
-
-## License
-
-MIT
 
 ---
 
-> **Disclaimer**: This is a research/educational tool built for a hackathon. It monitors publicly available market data for statistical anomalies — it does not facilitate, encourage, or automate any trading. Signals are not financial advice. Use at your own risk. Always do your own research before trading on prediction markets.
+## Current pipeline
+
+### 1. Market ingestion
+
+`src/data_fetcher.py` retrieves and normalizes market data from the Polymarket Gamma API.
+
+Current filters include:
+
+- minimum 24-hour volume: `$30,000`;
+- active/not-expired checks;
+- sports/live-event heuristics;
+- deduplication across pagination pages.
+
+Pagination is fail-closed: if an intermediate page cannot be retrieved or has an unexpected response structure, PolyAugur discards the partial scan instead of silently continuing with a gap.
+
+### 2. Snapshot construction
+
+Each market is converted into a normalized snapshot.
+
+The current volume baseline is a **derived proxy**:
+
+```text
+all-time volume / market age in days
+```
+
+It should not be interpreted as a historical rolling-volume model.
+
+Cross-observation metrics use the **actual elapsed time** between observations. The pipeline records:
+
+- price change since the previous observation;
+- rolling-24h volume change since the previous observation;
+- elapsed seconds;
+- price change linearly normalized to one hour.
+
+The linearly normalized hourly value is a mathematical normalization only. It is **not** a forecast and is not presented as an observed one-hour return.
+
+### 3. Elite pre-filter
+
+Current default gates are configured in `config.py`:
+
+| Parameter | Default |
+|---|---:|
+| Minimum 24h volume | `$30,000` |
+| Minimum spike ratio | `2.5x` |
+| Minimum recency ratio | `15%` |
+| Maximum days to close | `90` |
+| Anomaly threshold | `0.45` |
+
+These values are engineering defaults and heuristics, not statistically optimized operating points.
+
+### 4. Rule-based anomaly scoring
+
+`src/anomaly_detector.py` combines several heuristic layers:
+
+- volume-spike score;
+- price/liquidity pressure;
+- time-horizon adjustments;
+- recency adjustments;
+- topic-sensitive score multipliers.
+
+Known non-target categories can be excluded with a hard blacklist, including examples such as:
+
+- public social-media count markets;
+- broad crypto-price targets;
+- weather outcomes;
+- selected sports outcomes;
+- entertainment awards;
+- public polling/sentiment markets.
+
+Topic matches are **score boosters**, not evidence that a market contains insider trading.
+
+### 5. Optional LLM-assisted review
+
+Markets above the configured review threshold can be passed to `src/mistral_analyzer.py`.
+
+Current defaults:
+
+| Parameter | Default |
+|---|---:|
+| Review queue threshold | `0.45` |
+| Batch size | `4` |
+| Maximum LLM calls per cycle | `8` |
+| Review confidence threshold | `0.80` |
+
+LLM output is treated as untrusted external input.
+
+`src/llm_contract.py` validates responses against `schemas/mistral_signal.schema.json` using JSON Schema Draft 2020-12. The contract rejects:
+
+- missing required fields;
+- unsupported enum values;
+- invalid types;
+- unexpected fields;
+- invalid numeric ranges;
+- incorrect batch cardinality.
+
+A `confidence_score` is a **model-reported score**, not a calibrated probability.
+
+If the LLM client is unavailable, the analyzer contains a rule-based fallback path. Live Mistral execution is intentionally not required for the repository's offline tests and evaluation.
+
+### 6. CLOB trade heuristics
+
+For confirmed candidates, `src/trade_analyzer.py` can inspect CLOB trade activity and derive features such as:
+
+- large-trade counts;
+- wallet concentration;
+- directional bias;
+- timing/burst indicators.
+
+These values are heuristic evidence. They do not establish trader intent or identity.
+
+### 7. Persistence and reporting
+
+Signals can be written to SQLite through `src/signal_store.py`.
+
+Additional operational components include:
+
+- duplicate suppression;
+- outcome tracking;
+- CLI/HTML reporting;
+- optional Telegram notifications;
+- health checks and retry helpers;
+- a systemd service definition.
+
+These components provide operational scaffolding; **production readiness is not claimed**.
+
+---
+
+## Evaluation
+
+PolyAugur includes a fully offline evaluation harness in `src/evaluation.py`.
+
+The initial benchmark in `evaluation/labels.jsonl` contains **16 synthetic, manually defined rubric cases**. The label target is:
+
+> Should this scenario be escalated for manual review as potentially information-sensitive?
+
+The labels do **not** mean that insider trading actually occurred.
+
+The evaluator supports:
+
+- confusion-matrix counts;
+- precision;
+- recall;
+- F1;
+- accuracy;
+- Brier score;
+- expected calibration error (ECE);
+- fixed-width calibration bins;
+- optional token-count and cost reporting.
+
+The decision rule is:
+
+```text
+positive =
+    anomaly_detected == true
+    AND confidence_score >= threshold
+```
+
+### Current public evidence status
+
+| Metric | Status |
+|---|---|
+| Precision | **not measured** |
+| Recall | **not measured** |
+| Real-world calibration | **not measured** |
+| Model API cost | **not measured** |
+
+No real-world accuracy or cost figure is published until it is backed by a frozen prediction file and reproducible evaluation.
+
+See [`docs/EVALUATION.md`](docs/EVALUATION.md) for the benchmark semantics and evaluation procedure.
+
+### Run the evaluator
+
+Create a prediction file with one record per benchmark case:
+
+```json
+{"case_id":"rubric-001","anomaly_detected":true,"confidence_score":0.87}
+```
+
+Then run:
+
+```bash
+python -m src.evaluation \
+  --labels evaluation/labels.jsonl \
+  --predictions evaluation/predictions.jsonl \
+  --threshold 0.80 \
+  --output evaluation/results/report.json
+```
+
+No external API call is required.
+
+Optional token cost estimation:
+
+```bash
+python -m src.evaluation \
+  --labels evaluation/labels.jsonl \
+  --predictions evaluation/predictions.jsonl \
+  --input-cost-per-million <USD> \
+  --output-cost-per-million <USD>
+```
+
+Provider pricing is deliberately supplied at evaluation time rather than hard-coded.
+
+---
+
+## Testing
+
+The repository contains deterministic tests for:
+
+- time-delta semantics;
+- Gamma API fixtures;
+- pagination failure behavior;
+- deduplication;
+- HTTP 429 retry behavior;
+- JSON-Schema validation;
+- malformed and invalid LLM responses;
+- LLM fallback integration;
+- offline runtime startup;
+- evaluation metrics and validation.
+
+Install development dependencies:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+```
+
+Run the test suite:
+
+```bash
+python -m pytest -q
+```
+
+Additional local checks:
+
+```bash
+python -m ruff format --check src tests config.py run.py
+python -m ruff check src tests config.py run.py
+python -m compileall -q src tests config.py run.py
+python -m pip_audit --requirement requirements.txt
+```
+
+GitHub Actions runs the same core checks on clean environments.
+
+---
+
+## Quick start
+
+### Clone and install
+
+```bash
+git clone https://github.com/Diego-2510/PolyAugur.git
+cd PolyAugur
+
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install -r requirements.txt
+```
+
+### Offline smoke test
+
+No credentials are required:
+
+```bash
+python run.py --help
+```
+
+### Configuration
+
+```bash
+cp .env.example .env
+```
+
+Supported environment variables:
+
+| Variable | Required for | Description |
+|---|---|---|
+| `MISTRAL_API_KEY` | Live LLM-assisted review | Mistral API credential |
+| `TELEGRAM_BOT_TOKEN` | Telegram notifications | Telegram bot token |
+| `TELEGRAM_CHAT_ID` | Telegram notifications | Target chat ID |
+| `SIGNAL_DB_PATH` | Optional override | SQLite path, default `data/signals.db` |
+
+Live Mistral access is not required for unit tests, contract tests, Docker smoke tests, or offline evaluation.
+
+### Runtime commands
+
+```bash
+python run.py --help
+python run.py --stats
+python run.py --check
+python run.py --health
+python run.py --once
+python run.py --cycles 10
+```
+
+Commands that contact external services depend on current API availability and credentials.
+
+---
+
+## Docker
+
+The runtime image uses pinned Python 3.12 and runs as an unprivileged user.
+
+Build:
+
+```bash
+docker build -t polyaugur:local .
+```
+
+Offline smoke test:
+
+```bash
+docker run --rm polyaugur:local python run.py --help
+```
+
+Verify non-root execution:
+
+```bash
+docker run \
+  --rm \
+  --entrypoint sh \
+  polyaugur:local \
+  -c 'id && test "$(id -u)" -ne 0'
+```
+
+A real run can use named volumes for mutable state:
+
+```bash
+docker run \
+  --rm \
+  --env-file .env \
+  -v polyaugur-data:/app/data \
+  -v polyaugur-logs:/app/logs \
+  -v polyaugur-exports:/app/exports \
+  polyaugur:local \
+  python run.py --once
+```
+
+Secrets and local data should never be baked into the image.
+
+---
+
+## Dashboard and exports
+
+`src/dashboard.py` provides CLI exploration and export functionality for stored signals.
+
+Examples:
+
+```bash
+python -m src.dashboard
+python -m src.dashboard --hours 72
+python -m src.dashboard --whales
+python -m src.dashboard --performance
+python -m src.dashboard --export csv
+python -m src.dashboard --export html
+```
+
+The repository also contains a dashboard screenshot in `docs/dashboard.png`.
+
+---
+
+## Project structure
+
+```text
+PolyAugur/
+├── .github/
+│   └── workflows/
+│       └── ci.yml
+├── docs/
+│   ├── dashboard.png
+│   └── EVALUATION.md
+├── evaluation/
+│   └── labels.jsonl
+├── schemas/
+│   └── mistral_signal.schema.json
+├── src/
+│   ├── anomaly_detector.py
+│   ├── dashboard.py
+│   ├── data_fetcher.py
+│   ├── evaluation.py
+│   ├── health.py
+│   ├── llm_contract.py
+│   ├── mistral_analyzer.py
+│   ├── orchestrator.py
+│   ├── performance_tracker.py
+│   ├── retry.py
+│   ├── signal_store.py
+│   ├── telegram_notifier.py
+│   ├── trade_analyzer.py
+│   └── wallet_profiler.py
+├── tests/
+│   ├── fixtures/
+│   ├── test_data_fetcher_fixtures.py
+│   ├── test_evaluation.py
+│   ├── test_llm_contract.py
+│   ├── test_mistral_contract_integration.py
+│   ├── test_runtime_smoke.py
+│   └── test_time_semantics.py
+├── .dockerignore
+├── .env.example
+├── .gitignore
+├── Dockerfile
+├── LICENSE
+├── config.py
+├── polyaugur.service
+├── pyproject.toml
+├── requirements-dev.txt
+├── requirements.txt
+└── run.py
+```
+
+---
+
+## Key engineering decisions
+
+### Fail closed on incomplete pagination
+
+A partial market scan is discarded when an intermediate page fails. This avoids silently treating incomplete market coverage as complete data.
+
+### Real time semantics
+
+Cross-observation metrics use measured elapsed time rather than assuming that one polling cycle represents a fixed 30-minute interval.
+
+### Strict LLM boundary
+
+LLM output is validated before downstream use. Invalid responses do not get silently coerced into the expected structure.
+
+### Confidence is not probability
+
+The pipeline keeps model-reported confidence separate from statistical calibration. Brier score and ECE are available for evaluation, but no calibrated-probability claim is made without evidence.
+
+### No fabricated cost or accuracy claims
+
+Costs require recorded token counts and explicit pricing. Accuracy metrics require a reproducible benchmark and stored predictions.
+
+### No automated order execution
+
+PolyAugur produces research signals and reports only. It does not submit trades.
+
+---
+
+## Known limitations
+
+1. **The benchmark is synthetic.**  
+   The current 16-case benchmark validates evaluation plumbing and rubric consistency, not real-world detection quality.
+
+2. **Real-world precision and recall are not measured.**  
+   A stronger benchmark requires frozen historical markets, documented annotations, and stored model predictions.
+
+3. **LLM confidence is uncalibrated.**  
+   Scores are treated as model outputs rather than probabilities.
+
+4. **The current Gamma full-market scanner still uses offset pagination.**  
+   A real large scan has previously failed at a higher offset. Migrating to Gamma's cursor/keyset pagination is the next reliability improvement before claiming robust full-market coverage.
+
+5. **The volume baseline is a proxy.**  
+   `all-time volume / market age` is not equivalent to a historical rolling baseline.
+
+6. **Heuristic thresholds are not statistically optimized.**  
+   Detection thresholds currently encode engineering assumptions and should be evaluated on a frozen historical dataset.
+
+7. **Operational scaffolding is not a production guarantee.**  
+   Docker, systemd, retries, health checks, and persistence improve operability but do not by themselves establish production readiness.
+
+---
+
+## Security and privacy
+
+- Secrets belong in `.env` or an external secret store and are excluded from version control.
+- The Docker build context should exclude credentials, databases, logs, exports, tests, and local virtual environments.
+- LLM output is treated as untrusted input and schema-validated.
+- The repository does not contain real order-execution logic.
+- Synthetic evaluation fixtures contain no private or customer data.
+
+---
+
+## Tech stack
+
+- Python 3.12
+- Requests
+- Pandas
+- NumPy
+- SQLite
+- JSON Schema
+- Mistral Python SDK
+- Plotly / Streamlit
+- Docker
+- pytest
+- Ruff
+- pip-audit
+
+---
+
+## Background
+
+PolyAugur originated as a hackathon project and has since been refactored into a more reproducible research and engineering repository with:
+
+- deterministic fixtures;
+- explicit time semantics;
+- strict external-output contracts;
+- containerized runtime support;
+- offline evaluation;
+- documented methodological limitations.
+
+The focus is on making the system's assumptions and failure modes inspectable rather than presenting heuristic outputs as verified trading edge.
+
+---
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
+
+---
+
+## Disclaimer
+
+PolyAugur is a research and educational project. It monitors publicly available prediction-market data for anomalous activity. It does not establish that any person engaged in insider trading or other wrongdoing, does not execute trades, and is not financial advice.
