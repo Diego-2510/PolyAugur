@@ -117,6 +117,28 @@ def test_configured_page_cap_is_reported_as_truncation(monkeypatch) -> None:
     assert fetcher.fetch_stats["truncated"] is True
 
 
+
+def test_exact_page_cap_without_next_cursor_is_not_truncated(monkeypatch) -> None:
+    fetcher = PolymarketFetcher()
+    monkeypatch.setattr(config, "MARKETS_PER_PAGE", 1)
+    monkeypatch.setattr(data_fetcher_module.time, "sleep", lambda _: None)
+
+    responses = {
+        None: {"markets": [{"id": "1"}], "next_cursor": "page-2"},
+        "page-2": {"markets": [{"id": "2"}]},
+    }
+
+    def fake_api_get(base, endpoint, params=None, max_retries=3):
+        del base, endpoint, max_retries
+        return copy.deepcopy(responses[params.get("after_cursor")])
+
+    monkeypatch.setattr(fetcher, "_api_get", fake_api_get)
+    markets = fetcher.fetch_all_markets_paginated(max_pages=2)
+
+    assert [market["id"] for market in markets] == ["1", "2"]
+    assert fetcher.fetch_stats["incomplete"] is False
+    assert fetcher.fetch_stats["truncated"] is False
+
 def test_get_active_markets_raises_for_incomplete_scan(monkeypatch) -> None:
     fetcher = PolymarketFetcher()
 

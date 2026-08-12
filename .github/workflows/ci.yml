@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Python quality and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+
+      - name: Ruff format check
+        run: python -m ruff format --check src tests config.py run.py
+
+      - name: Ruff lint
+        run: python -m ruff check src tests config.py run.py
+
+      - name: Compile Python sources
+        run: python -m compileall -q src tests config.py run.py
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      - name: Audit Python dependencies
+        run: python -m pip_audit --requirement requirements.txt
+
+  container:
+    name: Container build and offline smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: quality
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7.0.1
+
+      - name: Build runtime image
+        run: docker build --tag polyaugur:ci .
+
+      - name: Offline CLI smoke test
+        run: docker run --rm polyaugur:ci python run.py --help
+
+      - name: Verify non-root runtime
+        run: >-
+          docker run --rm --entrypoint sh polyaugur:ci
+          -c 'test "$(id -u)" -ne 0 && id'
