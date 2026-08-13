@@ -1,4 +1,4 @@
 requests==2.33.0
-mistralai==1.0.1
+mistralai==2.9.1
 python-dotenv==1.2.2
 jsonschema==4.26.0
