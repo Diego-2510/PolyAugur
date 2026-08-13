@@ -117,7 +117,6 @@ def test_configured_page_cap_is_reported_as_truncation(monkeypatch) -> None:
     assert fetcher.fetch_stats["truncated"] is True
 
 
-
 def test_exact_page_cap_without_next_cursor_is_not_truncated(monkeypatch) -> None:
     fetcher = PolymarketFetcher()
     monkeypatch.setattr(config, "MARKETS_PER_PAGE", 1)
@@ -138,6 +137,7 @@ def test_exact_page_cap_without_next_cursor_is_not_truncated(monkeypatch) -> Non
     assert [market["id"] for market in markets] == ["1", "2"]
     assert fetcher.fetch_stats["incomplete"] is False
     assert fetcher.fetch_stats["truncated"] is False
+
 
 def test_get_active_markets_raises_for_incomplete_scan(monkeypatch) -> None:
     fetcher = PolymarketFetcher()

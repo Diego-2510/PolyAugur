@@ -38,21 +38,62 @@ class PolymarketFetcher:
         self.fetch_stats: dict[str, Any] = {}
 
         self._sport_keywords = [
-            "nfl", "nba", "mlb", "nhl", "mls", "super bowl", "stanley cup",
-            "world series", "nba finals", "bundesliga", "champions league",
-            "premier league", "la liga", "serie a", "ligue 1", "europa league",
-            "uefa", "epl", "pga", "pga tour", "masters", "golf", "augusta",
-            "ryder cup", "open championship", "us open golf", "fifa", "world cup",
-            "olympics", "formula 1", "nascar", "motogp", "wimbledon", "ufc",
-            "boxing", "wrestling", "tennis", "cycling", "tour de france", "ncaa",
-            "college football", "college basketball",
+            "nfl",
+            "nba",
+            "mlb",
+            "nhl",
+            "mls",
+            "super bowl",
+            "stanley cup",
+            "world series",
+            "nba finals",
+            "bundesliga",
+            "champions league",
+            "premier league",
+            "la liga",
+            "serie a",
+            "ligue 1",
+            "europa league",
+            "uefa",
+            "epl",
+            "pga",
+            "pga tour",
+            "masters",
+            "golf",
+            "augusta",
+            "ryder cup",
+            "open championship",
+            "us open golf",
+            "fifa",
+            "world cup",
+            "olympics",
+            "formula 1",
+            "nascar",
+            "motogp",
+            "wimbledon",
+            "ufc",
+            "boxing",
+            "wrestling",
+            "tennis",
+            "cycling",
+            "tour de france",
+            "ncaa",
+            "college football",
+            "college basketball",
         ]
         self._sport_patterns = [
-            re.compile(r"\bf1\b"), re.compile(r"\bvs\.?\s"), re.compile(r"\bgame\b"),
-            re.compile(r"\bmatch\b"), re.compile(r"\bscore\b"), re.compile(r"\bplayoff"),
-            re.compile(r"\bchampionship\b"), re.compile(r"\btournament\b"),
-            re.compile(r"finish in the top"), re.compile(r"top \d+ of the"),
-            re.compile(r"league table"), re.compile(r"title race"),
+            re.compile(r"\bf1\b"),
+            re.compile(r"\bvs\.?\s"),
+            re.compile(r"\bgame\b"),
+            re.compile(r"\bmatch\b"),
+            re.compile(r"\bscore\b"),
+            re.compile(r"\bplayoff"),
+            re.compile(r"\bchampionship\b"),
+            re.compile(r"\btournament\b"),
+            re.compile(r"finish in the top"),
+            re.compile(r"top \d+ of the"),
+            re.compile(r"league table"),
+            re.compile(r"title race"),
             re.compile(r"win the\s.*cup"),
         ]
 
@@ -81,9 +122,7 @@ class PolymarketFetcher:
                         time.sleep(delay)
                     continue
                 if response.status_code in (400, 404, 422):
-                    logger.debug(
-                        "HTTP %s: %s -> %s", response.status_code, url, response.text[:80]
-                    )
+                    logger.debug("HTTP %s: %s -> %s", response.status_code, url, response.text[:80])
                     return None
                 response.raise_for_status()
                 return response.json()
@@ -277,9 +316,7 @@ class PolymarketFetcher:
             "markets_raw": len(all_markets),
             "duplicates_removed": duplicates,
             "fetch_time_sec": round(total_time, 1),
-            "markets_per_sec": (
-                round(len(all_markets) / total_time, 1) if total_time > 0 else 0
-            ),
+            "markets_per_sec": (round(len(all_markets) / total_time, 1) if total_time > 0 else 0),
             "incomplete": incomplete,
             "truncated": truncated,
             "stopped_at_cursor": stopped_at_cursor,
@@ -362,10 +399,7 @@ class PolymarketFetcher:
             age_days = 30
 
             created_str = (
-                market.get("createdAt")
-                or market.get("created_at")
-                or market.get("startDate")
-                or ""
+                market.get("createdAt") or market.get("created_at") or market.get("startDate") or ""
             )
             if created_str:
                 try:
@@ -388,17 +422,13 @@ class PolymarketFetcher:
                 "spread": abs(yes_price - no_price),
                 "volume_24hr": volume_24hr,
                 "volume": volume_total,
-                "liquidity": _safe_float(
-                    market.get("liquidity", market.get("liquidityNum", 0))
-                ),
+                "liquidity": _safe_float(market.get("liquidity", market.get("liquidityNum", 0))),
                 "active": market.get("active", True),
                 "closed": market.get("closed", False),
                 "end_date_iso": market.get("end_date_iso"),
                 "tags": market.get("tags", []),
                 "event_slug": market.get("event_slug", market.get("eventSlug")),
-                "clobTokenIds": market.get(
-                    "clobTokenIds", market.get("clob_token_ids", [])
-                ),
+                "clobTokenIds": market.get("clobTokenIds", market.get("clob_token_ids", [])),
                 "baseline": round(avg_daily_baseline, 2),
                 "current_volume": volume_24hr,
                 "spike_ratio": round(spike_ratio, 3),
